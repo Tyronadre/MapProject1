@@ -38,6 +38,7 @@ Die SQLite-Datenbank wird ueber ein Volume nach `backend/data/mapgame.db` geschr
 - `POST /api/games/{game_id}/bounds`
 - `POST /api/games/{game_id}/answers`
 - `GET /api/games/{game_id}/answers`
+- `PUT /api/games/{game_id}/answers/{answer_id}`
 - `POST /api/map/pins`
 - `POST /api/map/transit`
 - `POST /api/map/transit-lines`

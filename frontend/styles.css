@@ -43,7 +43,8 @@ body {
 }
 
 button,
-select {
+select,
+input {
   font: inherit;
 }
 
@@ -162,7 +163,8 @@ button {
 
 .icon-button:focus-visible,
 .tool-button:focus-visible,
-select:focus-visible {
+select:focus-visible,
+input:focus-visible {
   outline: 3px solid rgba(37, 99, 235, 0.26);
   outline-offset: 2px;
 }
@@ -364,7 +366,8 @@ select:focus-visible {
   margin-bottom: 8px;
 }
 
-select {
+select,
+input {
   min-height: 42px;
   width: 100%;
   border: 1px solid var(--line);
@@ -372,6 +375,97 @@ select {
   background: var(--panel);
   color: var(--text);
   padding: 0 10px;
+}
+
+.is-hidden {
+  display: none !important;
+}
+
+.question-section .button-grid {
+  margin-top: 8px;
+}
+
+.thermometer-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.thermometer-fields .coordinate-row {
+  grid-column: 1 / -1;
+  margin-top: 0;
+}
+
+.question-status {
+  min-height: 28px;
+  margin-top: 8px;
+  padding: 7px 9px;
+  border: 1px solid #edf2f6;
+  border-radius: var(--radius);
+  background: #fbfdff;
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.answer-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.answer-list:empty {
+  display: none;
+}
+
+.answer-item {
+  display: grid;
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fbfdff;
+}
+
+.answer-item.is-editing {
+  border-color: rgba(37, 99, 235, 0.42);
+  background: #eff6ff;
+}
+
+.answer-main {
+  min-width: 0;
+}
+
+.answer-main strong,
+.answer-main span {
+  display: block;
+}
+
+.answer-main strong {
+  color: #25313a;
+  font-size: 0.78rem;
+  line-height: 1.25;
+}
+
+.answer-main span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.3;
+}
+
+.answer-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.answer-actions .tool-button {
+  min-height: 36px;
+  padding: 0 9px;
+  font-size: 0.76rem;
 }
 
 .pin-legend {

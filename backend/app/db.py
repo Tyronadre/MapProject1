@@ -141,6 +141,34 @@ class Database:
 
         return [row_to_answer(row) for row in rows]
 
+    def update_answer(self, game_id: str, answer_id: str, answer: dict[str, Any]) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE answers
+                SET question_type = :question_type,
+                    category = :category,
+                    question_text = :question_text,
+                    answer = :answer,
+                    seeker_position_json = :seeker_position_json,
+                    payload_json = :payload_json
+                WHERE game_id = :game_id AND id = :id
+                """,
+                {
+                    **answer,
+                    "id": answer_id,
+                    "game_id": game_id,
+                    "seeker_position_json": json.dumps(answer.get("seeker_position")),
+                    "payload_json": json.dumps(answer.get("payload", {})),
+                },
+            )
+            row = connection.execute(
+                "SELECT * FROM answers WHERE game_id = ? AND id = ?",
+                (game_id, answer_id),
+            ).fetchone()
+
+        return row_to_answer(row) if row else None
+
     def delete_answer(self, game_id: str, answer_id: str) -> bool:
         with self.connect() as connection:
             cursor = connection.execute(

@@ -70,6 +70,14 @@
             <span>Stationen</span>
             <strong id="stationCountValue">0</strong>
           </div>
+          <div class="metric">
+            <span>Antworten</span>
+            <strong id="answerCountValue">0</strong>
+          </div>
+          <div class="metric">
+            <span>Zellen</span>
+            <strong id="remainingCellCountValue">0</strong>
+          </div>
         </div>
 
         <div class="tool-section">
@@ -104,6 +112,63 @@
             <span>Koordinaten</span>
             <strong id="seekerValue">-</strong>
           </div>
+        </div>
+
+        <div class="tool-section question-section">
+          <div class="section-heading">
+            <h3>Fragen</h3>
+            <span class="section-count" id="questionSyncValue">Server -</span>
+          </div>
+          <div class="inline-controls">
+            <label class="select-label" for="questionType">Typ</label>
+            <select id="questionType"></select>
+          </div>
+          <div class="inline-controls" id="questionCategoryRow">
+            <label class="select-label" for="questionCategory">Katalog</label>
+            <select id="questionCategory"></select>
+          </div>
+          <div class="inline-controls" id="questionDistanceRow">
+            <label class="select-label" for="questionDistance">Distanz</label>
+            <select id="questionDistance"></select>
+          </div>
+          <div class="inline-controls is-hidden" id="questionCustomDistanceRow">
+            <label class="select-label" for="questionCustomDistance">Meter</label>
+            <input id="questionCustomDistance" type="number" min="1" step="1" inputmode="numeric" placeholder="1000" />
+          </div>
+          <div class="inline-controls">
+            <label class="select-label" for="questionAnswer">Antwort</label>
+            <select id="questionAnswer"></select>
+          </div>
+          <div class="thermometer-fields is-hidden" id="thermometerFields">
+            <button class="tool-button" id="setThermometerStartBtn" type="button">
+              <i data-lucide="circle-dot"></i>
+              <span>Start setzen</span>
+            </button>
+            <button class="tool-button" id="setThermometerEndBtn" type="button">
+              <i data-lucide="flag"></i>
+              <span>Ende setzen</span>
+            </button>
+            <div class="coordinate-row">
+              <span>Start</span>
+              <strong id="thermometerStartValue">-</strong>
+            </div>
+            <div class="coordinate-row">
+              <span>Ende</span>
+              <strong id="thermometerEndValue">-</strong>
+            </div>
+          </div>
+          <div class="button-grid">
+            <button class="tool-button primary" id="saveQuestionBtn" type="button">
+              <i data-lucide="list-plus"></i>
+              <span>Antwort speichern</span>
+            </button>
+            <button class="tool-button" id="cancelQuestionEditBtn" type="button" disabled>
+              <i data-lucide="x"></i>
+              <span>Abbrechen</span>
+            </button>
+          </div>
+          <div class="question-status" id="questionStatus">-</div>
+          <div class="answer-list" id="answerList" aria-label="Gespeicherte Antworten"></div>
         </div>
 
         <div class="tool-section">

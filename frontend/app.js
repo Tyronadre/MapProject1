@@ -1,4 +1,5 @@
 const STORAGE_KEY = "irl-hide-seek-map-state-v1";
+const DEFAULT_GAME_NAME = "Hide and Seek Game";
 const DEFAULT_VIEW = {
   center: [52.520008, 13.404954],
   zoom: 12,
@@ -14,6 +15,7 @@ const MAX_TRANSIT_LINES_ON_MAP = 300;
 const MAX_ALL_QUERY_AREA_KM2 = 900;
 const MAX_SINGLE_QUERY_AREA_KM2 = 5000;
 const MAX_TRANSIT_QUERY_AREA_KM2 = 3200;
+const MAX_SEARCH_CELLS = 2400;
 const POI_CATEGORY_ORDER = [
   "airport",
   "rail_station",
@@ -179,6 +181,96 @@ const TRANSIT_MODE_LABELS = {
   subway: "U-Bahn",
   tram: "Tram",
 };
+const QUESTION_TYPES = {
+  matching: {
+    label: "Matching",
+    answerOptions: [
+      ["yes", "Ja"],
+      ["no", "Nein"],
+    ],
+  },
+  measuring: {
+    label: "Measuring",
+    answerOptions: [
+      ["closer", "Closer"],
+      ["further", "Further"],
+    ],
+  },
+  radar: {
+    label: "Radar",
+    answerOptions: [
+      ["yes", "Ja"],
+      ["no", "Nein"],
+    ],
+  },
+  thermometer: {
+    label: "Thermometer",
+    answerOptions: [
+      ["closer", "Closer"],
+      ["further", "Further"],
+    ],
+  },
+};
+const MATCHING_QUESTION_CATEGORIES = [
+  ["airport", "Commercial airport"],
+  ["transit_line", "Transit line"],
+  ["station_name_length", "Station name length"],
+  ["street_name", "Name of street or path"],
+  ["admin_1", "1st administrative division"],
+  ["admin_2", "2nd administrative division"],
+  ["admin_3", "3rd administrative division"],
+  ["admin_4", "4th administrative division"],
+  ["peak", "Mountain"],
+  ["park", "Park"],
+  ["amusement_park", "Amusement park"],
+  ["zoo", "Zoo"],
+  ["aquarium", "Aquarium"],
+  ["golf_course", "Golf course"],
+  ["museum", "Museum"],
+  ["cinema", "Movie theatre"],
+  ["hospital", "Hospital"],
+  ["library", "Library"],
+  ["consulate", "Foreign consulate"],
+];
+const MEASURING_QUESTION_CATEGORIES = [
+  ["airport", "Commercial airport"],
+  ["high_speed_train_line", "High speed train line"],
+  ["rail_station", "Rail stations"],
+  ["international_border", "International border"],
+  ["admin_1_border", "1st administrative division border"],
+  ["admin_2_border", "2nd administrative division border"],
+  ["sea_level", "Sea level"],
+  ["water", "Body of water"],
+  ["coastline", "Coastline"],
+  ["peak", "Mountain"],
+  ["park", "Park"],
+  ["amusement_park", "Amusement park"],
+  ["zoo", "Zoo"],
+  ["aquarium", "Aquarium"],
+  ["golf_course", "Golf course"],
+  ["museum", "Museum"],
+  ["cinema", "Movie theatre"],
+  ["hospital", "Hospital"],
+  ["library", "Library"],
+  ["consulate", "Foreign consulate"],
+];
+const RADAR_DISTANCES = [
+  [400, "400 m"],
+  [800, "800 m"],
+  [1600, "1.6 km"],
+  [4800, "4.8 km"],
+  [8000, "8 km"],
+  [16000, "16 km"],
+  [40000, "40 km"],
+  [80000, "80 km"],
+  [160000, "160 km"],
+  ["custom", "Eigene Distanz"],
+];
+const THERMOMETER_DISTANCES = [
+  [800, "800 m"],
+  [4800, "4.8 km"],
+  [16000, "16 km"],
+];
 
 const ui = {
   statusText: document.querySelector("#statusText"),
@@ -190,6 +282,8 @@ const ui = {
   poiCountValue: document.querySelector("#poiCountValue"),
   transitCountValue: document.querySelector("#transitCountValue"),
   stationCountValue: document.querySelector("#stationCountValue"),
+  answerCountValue: document.querySelector("#answerCountValue"),
+  remainingCellCountValue: document.querySelector("#remainingCellCountValue"),
   seekerValue: document.querySelector("#seekerValue"),
   locateBtn: document.querySelector("#locateBtn"),
   fitBoundsBtn: document.querySelector("#fitBoundsBtn"),
@@ -214,6 +308,24 @@ const ui = {
   radarDistance: document.querySelector("#radarDistance"),
   previewRadarBtn: document.querySelector("#previewRadarBtn"),
   clearRadarBtn: document.querySelector("#clearRadarBtn"),
+  questionSyncValue: document.querySelector("#questionSyncValue"),
+  questionType: document.querySelector("#questionType"),
+  questionCategoryRow: document.querySelector("#questionCategoryRow"),
+  questionCategory: document.querySelector("#questionCategory"),
+  questionDistanceRow: document.querySelector("#questionDistanceRow"),
+  questionDistance: document.querySelector("#questionDistance"),
+  questionCustomDistanceRow: document.querySelector("#questionCustomDistanceRow"),
+  questionCustomDistance: document.querySelector("#questionCustomDistance"),
+  questionAnswer: document.querySelector("#questionAnswer"),
+  thermometerFields: document.querySelector("#thermometerFields"),
+  setThermometerStartBtn: document.querySelector("#setThermometerStartBtn"),
+  setThermometerEndBtn: document.querySelector("#setThermometerEndBtn"),
+  thermometerStartValue: document.querySelector("#thermometerStartValue"),
+  thermometerEndValue: document.querySelector("#thermometerEndValue"),
+  saveQuestionBtn: document.querySelector("#saveQuestionBtn"),
+  cancelQuestionEditBtn: document.querySelector("#cancelQuestionEditBtn"),
+  questionStatus: document.querySelector("#questionStatus"),
+  answerList: document.querySelector("#answerList"),
   clearGameBtn: document.querySelector("#clearGameBtn"),
 };
 
@@ -229,6 +341,10 @@ let seekerMarker = null;
 let accuracyLayer = null;
 let radarLayer = null;
 let draftMarkers = [];
+let searchRenderer = null;
+let searchGridLayer = null;
+let questionGeometryLayer = null;
+let searchCells = [];
 let transitLayer = null;
 let transitStationLayer = null;
 let transitRenderer = null;
@@ -239,6 +355,14 @@ let poiRenderer = null;
 let pois = [];
 let pinsVisible = true;
 let isSettingPoi = false;
+let isSettingThermometerEnd = false;
+let thermometerStart = null;
+let thermometerEnd = null;
+let gameId = null;
+let answers = [];
+let answerEffects = new Map();
+let editingAnswerId = null;
+let gameSyncAvailable = false;
 
 document.addEventListener("DOMContentLoaded", init);
 
@@ -263,6 +387,9 @@ function init() {
     attribution: "&copy; OpenStreetMap contributors",
   }).addTo(map);
 
+  searchRenderer = L.canvas({ padding: 0.5 });
+  searchGridLayer = L.layerGroup().addTo(map);
+  questionGeometryLayer = L.layerGroup().addTo(map);
   transitRenderer = L.canvas({ padding: 0.5 });
   transitLayer = L.layerGroup().addTo(map);
   transitStationLayer = L.layerGroup().addTo(map);
@@ -276,7 +403,11 @@ function init() {
   map.on("locationerror", handleLocationError);
 
   bindControls();
+  populateQuestionCatalog();
   restoreSavedLayers(savedState);
+  updateQuestionForm();
+  updateThermometerValues();
+  initGameSession();
   updateStats();
   setStatus("Bereit", "OSM");
 
@@ -304,6 +435,15 @@ function bindControls() {
   ui.clearTransitBtn.addEventListener("click", clearTransitLines);
   ui.previewRadarBtn.addEventListener("click", previewRadar);
   ui.clearRadarBtn.addEventListener("click", clearRadar);
+  ui.questionType.addEventListener("change", updateQuestionForm);
+  ui.questionDistance.addEventListener("change", updateQuestionForm);
+  ui.questionCategory.addEventListener("change", updateQuestionStatus);
+  ui.questionAnswer.addEventListener("change", updateQuestionStatus);
+  ui.setThermometerStartBtn.addEventListener("click", setThermometerStartFromSeeker);
+  ui.setThermometerEndBtn.addEventListener("click", toggleThermometerEndPlacement);
+  ui.saveQuestionBtn.addEventListener("click", saveQuestionAnswer);
+  ui.cancelQuestionEditBtn.addEventListener("click", cancelQuestionEdit);
+  ui.answerList.addEventListener("click", handleAnswerListClick);
   ui.clearGameBtn.addEventListener("click", clearGame);
 }
 
@@ -316,6 +456,12 @@ function handleMapClick(event) {
   if (isSettingSeeker) {
     placeSeeker(event.latlng);
     setSeekerPlacement(false);
+    return;
+  }
+
+  if (isSettingThermometerEnd) {
+    setThermometerEnd(event.latlng);
+    setThermometerEndPlacement(false);
     return;
   }
 
@@ -426,6 +572,9 @@ function setBoundary(points) {
   }).addTo(map);
 
   boundaryPoints = latlngs;
+  rebuildSearchGrid();
+  applyAnswersToSearchGrid();
+  syncGameBounds();
   renderPoiMarkers();
   renderTransitLines();
 }
@@ -442,8 +591,14 @@ function clearBoundary() {
   }
 
   boundaryPoints = [];
+  searchCells = [];
+  if (questionGeometryLayer) {
+    questionGeometryLayer.clearLayers();
+  }
+  renderSearchGrid();
   renderPoiMarkers();
   renderTransitLines();
+  updateStats();
 }
 
 function clearDraft() {
@@ -470,6 +625,7 @@ function setSeekerPlacement(active) {
   if (active) {
     isDrawingBoundary = false;
     setManualPinPlacement(false);
+    setThermometerEndPlacement(false);
     clearDraft();
     setStatus("Sucherposition setzen", "Position");
   } else if (!isDrawingBoundary) {
@@ -531,6 +687,7 @@ function placeSeeker(latlng) {
 
   saveState();
   updateStats();
+  updateQuestionStatus();
 }
 
 async function loadPins() {
@@ -555,6 +712,7 @@ async function loadPins() {
 
     pinsVisible = true;
     renderPoiMarkers();
+    applyAnswersToSearchGrid();
     saveState();
 
     if (backendResult?.cacheHit) {
@@ -855,9 +1013,10 @@ function setManualPinPlacement(active) {
   if (active) {
     isDrawingBoundary = false;
     setSeekerPlacement(false);
+    setThermometerEndPlacement(false);
     clearDraft();
     setStatus("Pinposition setzen", "Pins");
-  } else if (!isDrawingBoundary && !isSettingSeeker) {
+  } else if (!isDrawingBoundary && !isSettingSeeker && !isSettingThermometerEnd) {
     setStatus("Bereit", "OSM");
   }
 
@@ -981,16 +1140,52 @@ function focusRmvArea() {
 }
 
 async function postBackendJson(path, payload) {
-  const response = await fetch(`${BACKEND_API_BASE_URL}${path}`, {
+  return requestBackendJson(path, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
+    payload,
+  });
+}
+
+async function putBackendJson(path, payload) {
+  return requestBackendJson(path, {
+    method: "PUT",
+    payload,
+  });
+}
+
+async function getBackendJson(path) {
+  return requestBackendJson(path, {
+    method: "GET",
+  });
+}
+
+async function deleteBackend(path) {
+  await requestBackendJson(path, {
+    method: "DELETE",
+    expectJson: false,
+  });
+}
+
+async function requestBackendJson(path, options = {}) {
+  const method = options.method ?? "GET";
+  const headers = {};
+
+  if (options.payload !== undefined) {
+    headers["Content-Type"] = "application/json";
+  }
+
+  const response = await fetch(`${BACKEND_API_BASE_URL}${path}`, {
+    method,
+    headers,
+    body: options.payload === undefined ? undefined : JSON.stringify(options.payload),
   });
 
   if (!response.ok) {
     throw new Error(`Backend returned ${response.status}`);
+  }
+
+  if (options.expectJson === false || response.status === 204) {
+    return null;
   }
 
   return response.json();
@@ -1003,6 +1198,1021 @@ function serializeBounds(bounds) {
     north: bounds.getNorth(),
     east: bounds.getEast(),
   };
+}
+
+async function initGameSession() {
+  gameId = savedState.gameId || null;
+  setQuestionSync("Server ...");
+
+  try {
+    if (gameId) {
+      try {
+        const game = await getBackendJson(`/api/games/${gameId}`);
+        if (!boundaryLayer && Array.isArray(game.bounds) && game.bounds.length >= 3) {
+          setBoundary(game.bounds);
+        }
+      } catch {
+        gameId = null;
+      }
+    }
+
+    if (!gameId) {
+      const game = await postBackendJson("/api/games", {
+        name: DEFAULT_GAME_NAME,
+        bounds: boundaryLayer ? boundaryPoints.map(serializeLatLng) : null,
+      });
+      gameId = game.id;
+      saveState();
+    }
+
+    gameSyncAvailable = true;
+    setQuestionSync("Server ok");
+    await syncGameBounds();
+    await loadAnswersFromServer();
+  } catch {
+    gameSyncAvailable = false;
+    setQuestionSync("Server offline");
+    renderAnswerList();
+    updateQuestionStatus();
+  }
+}
+
+async function syncGameBounds() {
+  if (!gameId || !gameSyncAvailable || !boundaryLayer || boundaryPoints.length < 3) {
+    return;
+  }
+
+  try {
+    await postBackendJson(`/api/games/${gameId}/bounds`, {
+      bounds: boundaryPoints.map(serializeLatLng),
+    });
+  } catch {
+    gameSyncAvailable = false;
+    setQuestionSync("Server offline");
+  }
+}
+
+async function loadAnswersFromServer() {
+  if (!gameId) {
+    return;
+  }
+
+  const data = await getBackendJson(`/api/games/${gameId}/answers`);
+  answers = data.map(normalizeAnswerRecord).filter(Boolean);
+  applyAnswersToSearchGrid();
+  renderAnswerList();
+  updateQuestionStatus();
+}
+
+function normalizeAnswerRecord(record) {
+  if (!record || !QUESTION_TYPES[record.question_type]) {
+    return null;
+  }
+
+  return {
+    id: String(record.id),
+    gameId: String(record.game_id),
+    questionType: String(record.question_type),
+    category: record.category ? String(record.category) : "",
+    questionText: record.question_text ? String(record.question_text) : "",
+    answer: String(record.answer),
+    seekerPosition: record.seeker_position ? normalizeLatLngObject(record.seeker_position) : null,
+    payload: record.payload && typeof record.payload === "object" ? record.payload : {},
+    createdAt: String(record.created_at),
+  };
+}
+
+function normalizeLatLngObject(value) {
+  const lat = Number(value.lat);
+  const lng = Number(value.lng);
+
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return null;
+  }
+
+  return { lat, lng };
+}
+
+function populateQuestionCatalog() {
+  ui.questionType.innerHTML = Object.entries(QUESTION_TYPES)
+    .map(([type, config]) => `<option value="${type}">${escapeHtml(config.label)}</option>`)
+    .join("");
+}
+
+function updateQuestionForm() {
+  const type = ui.questionType.value || "matching";
+  updateQuestionCategoryOptions(type);
+  updateQuestionAnswerOptions(type);
+  updateQuestionDistanceOptions(type);
+
+  const hasCategory = type === "matching" || type === "measuring";
+  const hasDistance = type === "radar" || type === "thermometer";
+  const hasThermometerFields = type === "thermometer";
+
+  ui.questionCategoryRow.classList.toggle("is-hidden", !hasCategory);
+  ui.questionDistanceRow.classList.toggle("is-hidden", !hasDistance);
+  ui.thermometerFields.classList.toggle("is-hidden", !hasThermometerFields);
+  ui.questionCustomDistanceRow.classList.toggle(
+    "is-hidden",
+    !(type === "radar" && ui.questionDistance.value === "custom"),
+  );
+
+  updateQuestionStatus();
+  updateControls();
+}
+
+function updateQuestionCategoryOptions(type) {
+  const categories = type === "measuring" ? MEASURING_QUESTION_CATEGORIES : MATCHING_QUESTION_CATEGORIES;
+  const selected = ui.questionCategory.value;
+
+  ui.questionCategory.innerHTML = categories
+    .map(([categoryId, label]) => `<option value="${categoryId}">${escapeHtml(label)}</option>`)
+    .join("");
+
+  if (categories.some(([categoryId]) => categoryId === selected)) {
+    ui.questionCategory.value = selected;
+  }
+}
+
+function updateQuestionAnswerOptions(type) {
+  const selected = ui.questionAnswer.value;
+  const options = QUESTION_TYPES[type]?.answerOptions ?? QUESTION_TYPES.matching.answerOptions;
+
+  ui.questionAnswer.innerHTML = options
+    .map(([value, label]) => `<option value="${value}">${escapeHtml(label)}</option>`)
+    .join("");
+
+  if (options.some(([value]) => value === selected)) {
+    ui.questionAnswer.value = selected;
+  }
+}
+
+function updateQuestionDistanceOptions(type) {
+  const selected = ui.questionDistance.value;
+  const distances = type === "thermometer" ? THERMOMETER_DISTANCES : RADAR_DISTANCES;
+
+  ui.questionDistance.innerHTML = distances
+    .map(([value, label]) => `<option value="${value}">${escapeHtml(label)}</option>`)
+    .join("");
+
+  if (distances.some(([value]) => String(value) === selected)) {
+    ui.questionDistance.value = selected;
+  } else if (type === "radar") {
+    ui.questionDistance.value = "4800";
+  }
+}
+
+function updateQuestionStatus(message) {
+  if (message) {
+    ui.questionStatus.textContent = message;
+    return;
+  }
+
+  const type = ui.questionType.value || "matching";
+  const category = ui.questionCategory.value;
+
+  if (!boundaryLayer) {
+    ui.questionStatus.textContent = "Spielgrenze fehlt";
+    return;
+  }
+
+  if ((type === "radar" || type === "matching" || type === "measuring") && !seekerMarker) {
+    ui.questionStatus.textContent = "Sucherposition fehlt";
+    return;
+  }
+
+  if (type === "matching" || type === "measuring") {
+    const features = getQuestionFeatures(category);
+    ui.questionStatus.textContent = features.length > 0 ?
+      `${features.length} Referenzen verfuegbar` :
+      "Keine passenden Referenzen geladen";
+    return;
+  }
+
+  if (type === "thermometer" && (!thermometerStart || !thermometerEnd)) {
+    ui.questionStatus.textContent = "Thermometerpunkte fehlen";
+    return;
+  }
+
+  ui.questionStatus.textContent = `${getRemainingCellCount()} Zellen verbleibend`;
+}
+
+function setQuestionSync(value) {
+  ui.questionSyncValue.textContent = value;
+}
+
+function setThermometerStartFromSeeker() {
+  const seekerLatLng = seekerMarker?.getLatLng();
+
+  if (!seekerLatLng) {
+    setStatus("Sucherposition fehlt", "Thermometer");
+    setSeekerPlacement(true);
+    return;
+  }
+
+  thermometerStart = serializeLatLng(seekerLatLng);
+  updateThermometerValues();
+  updateQuestionStatus();
+}
+
+function toggleThermometerEndPlacement() {
+  setThermometerEndPlacement(!isSettingThermometerEnd);
+}
+
+function setThermometerEndPlacement(active) {
+  isSettingThermometerEnd = active;
+
+  if (active) {
+    isDrawingBoundary = false;
+    setSeekerPlacement(false);
+    setManualPinPlacement(false);
+    clearDraft();
+    setStatus("Thermometer-Ende setzen", "Thermo");
+  } else if (!isDrawingBoundary && !isSettingSeeker && !isSettingPoi) {
+    setStatus("Bereit", "OSM");
+  }
+
+  updateControls();
+}
+
+function setThermometerEnd(latlng) {
+  thermometerEnd = serializeLatLng(latlng);
+  updateThermometerValues();
+  updateQuestionStatus();
+}
+
+function updateThermometerValues() {
+  ui.thermometerStartValue.textContent = thermometerStart ?
+    `${thermometerStart.lat.toFixed(5)}, ${thermometerStart.lng.toFixed(5)}` :
+    "-";
+  ui.thermometerEndValue.textContent = thermometerEnd ?
+    `${thermometerEnd.lat.toFixed(5)}, ${thermometerEnd.lng.toFixed(5)}` :
+    "-";
+}
+
+async function saveQuestionAnswer() {
+  if (!boundaryLayer) {
+    updateQuestionStatus("Spielgrenze fehlt");
+    return;
+  }
+
+  try {
+    await ensureWritableGameSession();
+    const payload = buildQuestionAnswerPayload();
+    const saved = editingAnswerId ?
+      await putBackendJson(`/api/games/${gameId}/answers/${editingAnswerId}`, payload) :
+      await postBackendJson(`/api/games/${gameId}/answers`, payload);
+    const normalized = normalizeAnswerRecord(saved);
+
+    if (!normalized) {
+      throw new Error("Invalid answer response");
+    }
+
+    if (editingAnswerId) {
+      answers = answers.map((answer) => answer.id === normalized.id ? normalized : answer);
+    } else {
+      answers.push(normalized);
+    }
+
+    editingAnswerId = null;
+    ui.saveQuestionBtn.innerHTML = '<i data-lucide="list-plus"></i><span>Antwort speichern</span>';
+    ui.cancelQuestionEditBtn.disabled = true;
+    setQuestionSync("Server ok");
+    gameSyncAvailable = true;
+    applyAnswersToSearchGrid();
+    renderAnswerList();
+    updateQuestionStatus("Antwort gespeichert");
+    updateControls();
+  } catch (error) {
+    updateQuestionStatus(error.message || "Antwort konnte nicht gespeichert werden");
+  }
+}
+
+async function ensureWritableGameSession() {
+  if (gameId && gameSyncAvailable) {
+    return;
+  }
+
+  await initGameSession();
+
+  if (!gameId || !gameSyncAvailable) {
+    throw new Error("Server nicht erreichbar");
+  }
+}
+
+function buildQuestionAnswerPayload() {
+  const type = ui.questionType.value || "matching";
+  const answer = ui.questionAnswer.value;
+  const category = type === "matching" || type === "measuring" ? ui.questionCategory.value : "";
+  const seekerLatLng = seekerMarker?.getLatLng();
+  const seekerPosition = seekerLatLng ? serializeLatLng(seekerLatLng) : null;
+  const payload = {
+    category_label: getQuestionCategoryLabel(type, category),
+  };
+
+  if ((type === "radar" || type === "matching" || type === "measuring") && !seekerPosition) {
+    throw new Error("Sucherposition fehlt");
+  }
+
+  if (type === "radar") {
+    payload.radius_m = getSelectedQuestionDistanceMeters();
+    payload.distance_label = formatDistance(payload.radius_m);
+  }
+
+  if (type === "thermometer") {
+    if (!thermometerStart || !thermometerEnd) {
+      throw new Error("Thermometerpunkte fehlen");
+    }
+
+    payload.travel_distance_m = getSelectedQuestionDistanceMeters();
+    payload.distance_label = formatDistance(payload.travel_distance_m);
+    payload.start_position = thermometerStart;
+    payload.end_position = thermometerEnd;
+  }
+
+  return {
+    question_type: type,
+    category: category || null,
+    question_text: buildQuestionText(type, category, payload),
+    answer,
+    seeker_position: seekerPosition,
+    payload,
+  };
+}
+
+function getSelectedQuestionDistanceMeters() {
+  if (ui.questionDistance.value === "custom") {
+    const customDistance = Number(ui.questionCustomDistance.value);
+
+    if (!Number.isFinite(customDistance) || customDistance <= 0) {
+      throw new Error("Distanz fehlt");
+    }
+
+    return Math.round(customDistance);
+  }
+
+  const distance = Number(ui.questionDistance.value);
+
+  if (!Number.isFinite(distance) || distance <= 0) {
+    throw new Error("Distanz fehlt");
+  }
+
+  return distance;
+}
+
+function buildQuestionText(type, category, payload) {
+  const categoryLabel = getQuestionCategoryLabel(type, category);
+
+  if (type === "matching") {
+    return `Is your nearest ${categoryLabel} the same as my ${categoryLabel}?`;
+  }
+
+  if (type === "measuring") {
+    return `Compared to me, are you closer or further from ${categoryLabel}?`;
+  }
+
+  if (type === "radar") {
+    return `Are you within ${payload.distance_label} of me?`;
+  }
+
+  return `After traveling for ${payload.distance_label}, am I closer or further away from you?`;
+}
+
+function getQuestionCategoryLabel(type, category) {
+  const categories = type === "measuring" ? MEASURING_QUESTION_CATEGORIES : MATCHING_QUESTION_CATEGORIES;
+  return categories.find(([categoryId]) => categoryId === category)?.[1] ?? "";
+}
+
+function renderAnswerList() {
+  if (answers.length === 0) {
+    ui.answerList.innerHTML = "";
+    updateStats();
+    return;
+  }
+
+  ui.answerList.innerHTML = answers.map((answer, index) => {
+    const effect = answerEffects.get(answer.id);
+    const effectLabel = effect ? formatAnswerEffect(effect) : "Nicht berechnet";
+    const editingClass = answer.id === editingAnswerId ? " is-editing" : "";
+
+    return `
+      <div class="answer-item${editingClass}" data-answer-id="${escapeHtml(answer.id)}">
+        <div class="answer-main">
+          <strong>${index + 1}. ${escapeHtml(answer.questionText || QUESTION_TYPES[answer.questionType].label)}</strong>
+          <span>${escapeHtml(formatAnswerValue(answer.answer))} - ${escapeHtml(effectLabel)}</span>
+        </div>
+        <div class="answer-actions">
+          <button class="tool-button" type="button" data-answer-action="edit">
+            <i data-lucide="pencil"></i>
+            <span>Aendern</span>
+          </button>
+          <button class="tool-button danger" type="button" data-answer-action="delete">
+            <i data-lucide="trash-2"></i>
+            <span>Loeschen</span>
+          </button>
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  if (window.lucide) {
+    window.lucide.createIcons();
+  }
+
+  updateStats();
+}
+
+function formatAnswerValue(value) {
+  const labels = {
+    yes: "Ja",
+    no: "Nein",
+    closer: "Closer",
+    further: "Further",
+  };
+  return labels[value] ?? value;
+}
+
+function formatAnswerEffect(effect) {
+  if (effect.status === "applied") {
+    return `${effect.excludedCount} ausgeschlossen`;
+  }
+
+  return effect.reason || "Nicht angewendet";
+}
+
+async function handleAnswerListClick(event) {
+  const button = event.target.closest("[data-answer-action]");
+
+  if (!button) {
+    return;
+  }
+
+  const item = button.closest("[data-answer-id]");
+  const answerId = item?.dataset.answerId;
+  const action = button.dataset.answerAction;
+
+  if (!answerId) {
+    return;
+  }
+
+  if (action === "edit") {
+    editAnswer(answerId);
+    return;
+  }
+
+  if (action === "delete") {
+    await deleteAnswer(answerId);
+  }
+}
+
+function editAnswer(answerId) {
+  const answer = answers.find((candidate) => candidate.id === answerId);
+
+  if (!answer) {
+    return;
+  }
+
+  editingAnswerId = answerId;
+  ui.questionType.value = answer.questionType;
+  updateQuestionForm();
+
+  if (answer.category) {
+    ui.questionCategory.value = answer.category;
+  }
+
+  if (answer.questionType === "radar") {
+    setQuestionDistanceValue(answer.payload.radius_m);
+  }
+
+  if (answer.questionType === "thermometer") {
+    setQuestionDistanceValue(answer.payload.travel_distance_m);
+    thermometerStart = normalizeLatLngObject(answer.payload.start_position);
+    thermometerEnd = normalizeLatLngObject(answer.payload.end_position);
+    updateThermometerValues();
+  }
+
+  ui.questionAnswer.value = answer.answer;
+  ui.saveQuestionBtn.innerHTML = '<i data-lucide="save"></i><span>Aenderung speichern</span>';
+  ui.cancelQuestionEditBtn.disabled = false;
+  renderAnswerList();
+  updateQuestionStatus("Antwort wird bearbeitet");
+  updateControls();
+}
+
+function setQuestionDistanceValue(distanceMeters) {
+  const distanceValue = String(distanceMeters);
+  const hasOption = Array.from(ui.questionDistance.options)
+    .some((option) => option.value === distanceValue);
+
+  if (hasOption) {
+    ui.questionDistance.value = distanceValue;
+    ui.questionCustomDistanceRow.classList.add("is-hidden");
+  } else {
+    ui.questionDistance.value = "custom";
+    ui.questionCustomDistance.value = distanceMeters || "";
+    ui.questionCustomDistanceRow.classList.remove("is-hidden");
+  }
+}
+
+function cancelQuestionEdit() {
+  editingAnswerId = null;
+  ui.saveQuestionBtn.innerHTML = '<i data-lucide="list-plus"></i><span>Antwort speichern</span>';
+  ui.cancelQuestionEditBtn.disabled = true;
+  renderAnswerList();
+  updateQuestionStatus();
+  updateControls();
+}
+
+async function deleteAnswer(answerId) {
+  try {
+    await ensureWritableGameSession();
+    await deleteBackend(`/api/games/${gameId}/answers/${answerId}`);
+    answers = answers.filter((answer) => answer.id !== answerId);
+
+    if (editingAnswerId === answerId) {
+      cancelQuestionEdit();
+    }
+
+    applyAnswersToSearchGrid();
+    renderAnswerList();
+    updateQuestionStatus("Antwort geloescht");
+  } catch {
+    updateQuestionStatus("Antwort konnte nicht geloescht werden");
+  }
+}
+
+function rebuildSearchGrid() {
+  if (!boundaryLayer || boundaryPoints.length < 3) {
+    searchCells = [];
+    renderSearchGrid();
+    return;
+  }
+
+  const bounds = boundaryLayer.getBounds();
+  const areaKm2 = Math.abs(geodesicArea(boundaryPoints)) / 1000000;
+  let cellSizeMeters = getSearchCellSizeMeters(areaKm2);
+  let cells = [];
+
+  do {
+    cells = generateSearchCells(bounds, cellSizeMeters);
+    if (cells.length > MAX_SEARCH_CELLS) {
+      cellSizeMeters *= 1.35;
+    }
+  } while (cells.length > MAX_SEARCH_CELLS && cellSizeMeters < 2500);
+
+  searchCells = cells;
+  renderSearchGrid();
+}
+
+function getSearchCellSizeMeters(areaKm2) {
+  if (areaKm2 > 1200) {
+    return 800;
+  }
+
+  if (areaKm2 > 400) {
+    return 500;
+  }
+
+  if (areaKm2 > 80) {
+    return 250;
+  }
+
+  if (areaKm2 > 20) {
+    return 150;
+  }
+
+  return 100;
+}
+
+function generateSearchCells(bounds, cellSizeMeters) {
+  const centerLat = (bounds.getSouth() + bounds.getNorth()) / 2;
+  const latStep = metersToLatDegrees(cellSizeMeters);
+  const lngStep = metersToLngDegrees(cellSizeMeters, centerLat);
+  const cells = [];
+  let index = 0;
+
+  for (let south = bounds.getSouth(); south < bounds.getNorth(); south += latStep) {
+    const north = Math.min(south + latStep, bounds.getNorth());
+
+    for (let west = bounds.getWest(); west < bounds.getEast(); west += lngStep) {
+      const east = Math.min(west + lngStep, bounds.getEast());
+      const center = L.latLng((south + north) / 2, (west + east) / 2);
+
+      if (!pointInPolygon(center, boundaryPoints)) {
+        continue;
+      }
+
+      cells.push({
+        id: `cell-${index}`,
+        center,
+        bounds: [[south, west], [north, east]],
+        areaSquareMeters: cellAreaSquareMeters(south, north, west, east),
+        status: "possible",
+        excludedBy: null,
+      });
+      index += 1;
+    }
+  }
+
+  return cells;
+}
+
+function applyAnswersToSearchGrid() {
+  if (searchCells.length === 0) {
+    answerEffects = new Map();
+    renderSearchGrid();
+    renderAnswerList();
+    return;
+  }
+
+  searchCells.forEach((cell) => {
+    cell.status = "possible";
+    cell.excludedBy = null;
+  });
+  answerEffects = new Map();
+
+  answers.forEach((answer) => {
+    const context = buildQuestionContext(answer);
+
+    if (!context.applicable) {
+      answerEffects.set(answer.id, {
+        status: "skipped",
+        reason: context.reason,
+        excludedCount: 0,
+      });
+      return;
+    }
+
+    let evaluatedCount = 0;
+    let excludedCount = 0;
+
+    searchCells.forEach((cell) => {
+      if (cell.status === "excluded") {
+        return;
+      }
+
+      const keep = cellMatchesAnswer(cell, answer, context);
+
+      if (keep === null) {
+        return;
+      }
+
+      evaluatedCount += 1;
+
+      if (!keep) {
+        cell.status = "excluded";
+        cell.excludedBy = answer.id;
+        excludedCount += 1;
+      }
+    });
+
+    answerEffects.set(answer.id, {
+      status: evaluatedCount > 0 ? "applied" : "skipped",
+      reason: evaluatedCount > 0 ? "" : "Keine Zellen ausgewertet",
+      excludedCount,
+    });
+  });
+
+  renderQuestionGeometry();
+  renderSearchGrid();
+  renderAnswerList();
+  updateQuestionStatus();
+}
+
+function buildQuestionContext(answer) {
+  if (answer.questionType === "radar") {
+    const radius = Number(answer.payload.radius_m);
+
+    if (!answer.seekerPosition || !Number.isFinite(radius)) {
+      return { applicable: false, reason: "Radar-Daten fehlen" };
+    }
+
+    return { applicable: true, radius };
+  }
+
+  if (answer.questionType === "thermometer") {
+    const start = normalizeLatLngObject(answer.payload.start_position);
+    const end = normalizeLatLngObject(answer.payload.end_position);
+
+    if (!start || !end) {
+      return { applicable: false, reason: "Thermometerpunkte fehlen" };
+    }
+
+    return { applicable: true, start, end };
+  }
+
+  if (answer.questionType === "matching") {
+    const features = getQuestionFeatures(answer.category);
+
+    if (!answer.seekerPosition || features.length === 0) {
+      return { applicable: false, reason: "Referenzen fehlen" };
+    }
+
+    const seekerValue = getMatchingValueForPoint(answer.seekerPosition, answer.category, features);
+
+    if (!seekerValue) {
+      return { applicable: false, reason: "Sucher-Referenz fehlt" };
+    }
+
+    return {
+      applicable: true,
+      features,
+      seekerValue,
+    };
+  }
+
+  if (answer.questionType === "measuring") {
+    const features = getQuestionFeatures(answer.category);
+
+    if (!answer.seekerPosition || features.length === 0) {
+      return { applicable: false, reason: "Referenzen fehlen" };
+    }
+
+    const seekerDistance = distanceToNearestFeature(answer.seekerPosition, features);
+
+    if (!Number.isFinite(seekerDistance)) {
+      return { applicable: false, reason: "Sucher-Distanz fehlt" };
+    }
+
+    return {
+      applicable: true,
+      features,
+      seekerDistance,
+    };
+  }
+
+  return { applicable: false, reason: "Fragetyp unbekannt" };
+}
+
+function cellMatchesAnswer(cell, answer, context) {
+  if (answer.questionType === "radar") {
+    const distance = distanceMeters(cell.center, answer.seekerPosition);
+    const inside = distance <= context.radius;
+    return answer.answer === "yes" ? inside : !inside;
+  }
+
+  if (answer.questionType === "thermometer") {
+    const startDistance = distanceMeters(cell.center, context.start);
+    const endDistance = distanceMeters(cell.center, context.end);
+    const closerAfterTravel = endDistance < startDistance;
+    return answer.answer === "closer" ? closerAfterTravel : !closerAfterTravel;
+  }
+
+  if (answer.questionType === "matching") {
+    const cellValue = getMatchingValueForPoint(cell.center, answer.category, context.features);
+
+    if (!cellValue) {
+      return null;
+    }
+
+    const matches = matchingValuesOverlap(context.seekerValue, cellValue);
+    return answer.answer === "yes" ? matches : !matches;
+  }
+
+  if (answer.questionType === "measuring") {
+    const cellDistance = distanceToNearestFeature(cell.center, context.features);
+
+    if (!Number.isFinite(cellDistance)) {
+      return null;
+    }
+
+    return answer.answer === "closer" ?
+      cellDistance < context.seekerDistance :
+      cellDistance > context.seekerDistance;
+  }
+
+  return null;
+}
+
+function renderSearchGrid() {
+  if (!searchGridLayer) {
+    return;
+  }
+
+  searchGridLayer.clearLayers();
+
+  searchCells.forEach((cell) => {
+    const possible = cell.status !== "excluded";
+    L.rectangle(cell.bounds, {
+      renderer: searchRenderer,
+      interactive: false,
+      stroke: false,
+      fillColor: possible ? "#138a63" : "#b42318",
+      fillOpacity: possible ? 0.18 : 0.22,
+    }).addTo(searchGridLayer);
+  });
+
+  updateStats();
+}
+
+function renderQuestionGeometry() {
+  if (!questionGeometryLayer) {
+    return;
+  }
+
+  questionGeometryLayer.clearLayers();
+
+  answers.forEach((answer) => {
+    if (answer.questionType === "radar" && answer.seekerPosition && Number.isFinite(Number(answer.payload.radius_m))) {
+      L.circle(answer.seekerPosition, {
+        radius: Number(answer.payload.radius_m),
+        color: answer.answer === "yes" ? "#138a63" : "#b42318",
+        fill: false,
+        opacity: 0.75,
+        weight: 2,
+        interactive: false,
+      }).addTo(questionGeometryLayer);
+    }
+
+    if (answer.questionType === "thermometer") {
+      const start = normalizeLatLngObject(answer.payload.start_position);
+      const end = normalizeLatLngObject(answer.payload.end_position);
+
+      if (start && end) {
+        L.polyline([start, end], {
+          color: answer.answer === "closer" ? "#138a63" : "#b42318",
+          opacity: 0.85,
+          weight: 3,
+          dashArray: "8 7",
+          interactive: false,
+        }).addTo(questionGeometryLayer);
+      }
+    }
+  });
+}
+
+function getQuestionFeatures(category) {
+  if (!category) {
+    return [];
+  }
+
+  if (category === "transit_line" || category === "station_name_length" || category === "rail_station") {
+    const stationFeatures = getStationQuestionFeatures();
+
+    if (category === "rail_station") {
+      return stationFeatures.concat(getPoiQuestionFeatures("rail_station"));
+    }
+
+    return stationFeatures;
+  }
+
+  if (category === "high_speed_train_line") {
+    return getHighSpeedTrainLineFeatures();
+  }
+
+  if (POI_CATEGORIES[category]) {
+    return getPoiQuestionFeatures(category);
+  }
+
+  return [];
+}
+
+function getPoiQuestionFeatures(category) {
+  return pois
+    .filter((poi) => poi.category === category && isPoiInsideBoundary(poi))
+    .map((poi) => ({
+      id: poi.id,
+      name: poi.name,
+      lat: poi.lat,
+      lng: poi.lng,
+      kind: "poi",
+    }));
+}
+
+function getStationQuestionFeatures() {
+  return getStationsForLines(transitLines)
+    .map((station) => ({
+      id: station.id,
+      name: station.name,
+      lat: station.lat,
+      lng: station.lng,
+      lineRefs: station.lineRefs || [],
+      kind: "station",
+    }));
+}
+
+function getHighSpeedTrainLineFeatures() {
+  const highSpeedPattern = /^(ICE|IC|EC|FLX|TGV|RJ)/i;
+  const features = [];
+
+  transitLines
+    .filter((line) => line.mode === "train" && highSpeedPattern.test(line.ref))
+    .forEach((line) => {
+      line.paths.forEach((path, pathIndex) => {
+        path.forEach(([lat, lng], pointIndex) => {
+          features.push({
+            id: `${line.id}/${pathIndex}/${pointIndex}`,
+            name: line.ref,
+            lat,
+            lng,
+            kind: "line-point",
+          });
+        });
+      });
+    });
+
+  return features;
+}
+
+function getMatchingValueForPoint(point, category, features) {
+  const nearest = nearestFeature(point, features);
+
+  if (!nearest) {
+    return null;
+  }
+
+  if (category === "transit_line") {
+    return {
+      type: "set",
+      values: nearest.lineRefs?.length ? nearest.lineRefs : [nearest.name],
+    };
+  }
+
+  if (category === "station_name_length") {
+    return {
+      type: "value",
+      value: String(normalizedNameLength(nearest.name)),
+    };
+  }
+
+  return {
+    type: "value",
+    value: nearest.id,
+  };
+}
+
+function matchingValuesOverlap(left, right) {
+  if (left.type === "set" || right.type === "set") {
+    const leftValues = new Set(left.type === "set" ? left.values : [left.value]);
+    const rightValues = right.type === "set" ? right.values : [right.value];
+    return rightValues.some((value) => leftValues.has(value));
+  }
+
+  return left.value === right.value;
+}
+
+function distanceToNearestFeature(point, features) {
+  const nearest = nearestFeature(point, features);
+  return nearest ? nearest.distance : Number.NaN;
+}
+
+function nearestFeature(point, features) {
+  let nearest = null;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+
+  features.forEach((feature) => {
+    const distance = distanceMeters(point, feature);
+
+    if (distance < nearestDistance) {
+      nearest = feature;
+      nearestDistance = distance;
+    }
+  });
+
+  return nearest ? { ...nearest, distance: nearestDistance } : null;
+}
+
+function normalizedNameLength(value) {
+  return String(value ?? "")
+    .normalize("NFKD")
+    .replace(/[\s\-'".,()]/g, "")
+    .length;
+}
+
+function getRemainingCellCount() {
+  return searchCells.filter((cell) => cell.status !== "excluded").length;
+}
+
+function getRemainingSearchAreaSquareMeters() {
+  return searchCells
+    .filter((cell) => cell.status !== "excluded")
+    .reduce((sum, cell) => sum + cell.areaSquareMeters, 0);
+}
+
+function metersToLatDegrees(meters) {
+  return meters / 110574;
+}
+
+function metersToLngDegrees(meters, latitude) {
+  return meters / (111320 * Math.max(0.2, Math.cos(degreesToRadians(latitude))));
+}
+
+function cellAreaSquareMeters(south, north, west, east) {
+  const centerLat = (south + north) / 2;
+  const height = Math.abs(north - south) * 110574;
+  const width = Math.abs(east - west) * 111320 * Math.cos(degreesToRadians(centerLat));
+  return Math.max(0, height * width);
+}
+
+function distanceMeters(pointA, pointB) {
+  const lat1 = degreesToRadians(Number(pointA.lat));
+  const lat2 = degreesToRadians(Number(pointB.lat));
+  const deltaLat = degreesToRadians(Number(pointB.lat) - Number(pointA.lat));
+  const deltaLng = degreesToRadians(Number(pointB.lng) - Number(pointA.lng));
+  const haversine = Math.sin(deltaLat / 2) ** 2 +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(deltaLng / 2) ** 2;
+
+  return 6371000 * 2 * Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine));
 }
 
 function normalizeBackendPoi(item) {
@@ -1076,6 +2286,7 @@ async function loadTransitLines() {
 
     transitVisible = true;
     renderTransitLines();
+    applyAnswersToSearchGrid();
 
     if (backendResult?.cacheHit) {
       setStatus(`${incomingLines.length} Linien aus Cache`, "OePNV");
@@ -1748,14 +2959,25 @@ function clearGame() {
   clearBoundary();
   clearDraft();
   clearRadar();
+  if (questionGeometryLayer) {
+    questionGeometryLayer.clearLayers();
+  }
   transitLines = [];
   transitVisible = true;
   renderTransitLines();
   pois = [];
   pinsVisible = true;
   renderPoiMarkers();
+  answers = [];
+  answerEffects = new Map();
+  gameId = null;
+  gameSyncAvailable = false;
+  editingAnswerId = null;
   boundaryPoints = [];
+  searchCells = [];
+  renderSearchGrid();
   isDrawingBoundary = false;
+  setThermometerEndPlacement(false);
   setSeekerPlacement(false);
 
   if (seekerMarker) {
@@ -1769,6 +2991,8 @@ function clearGame() {
   }
 
   localStorage.removeItem(STORAGE_KEY);
+  renderAnswerList();
+  initGameSession();
   setStatus("Karte zurueckgesetzt", "OSM");
   updateControls();
   updateStats();
@@ -1778,12 +3002,14 @@ function updateControls() {
   ui.drawBoundaryBtn.classList.toggle("is-active", isDrawingBoundary);
   ui.setSeekerBtn.classList.toggle("is-active", isSettingSeeker);
   ui.setManualPinBtn.classList.toggle("is-active", isSettingPoi);
+  ui.setThermometerEndBtn.classList.toggle("is-active", isSettingThermometerEnd);
   ui.finishBoundaryBtn.disabled = !isDrawingBoundary || boundaryPoints.length < 3;
   ui.cancelBoundaryBtn.disabled = !isDrawingBoundary;
   ui.togglePinsBtn.disabled = pois.length === 0;
   ui.clearPinsBtn.disabled = pois.length === 0;
   ui.toggleTransitBtn.disabled = transitLines.length === 0;
   ui.clearTransitBtn.disabled = transitLines.length === 0;
+  ui.saveQuestionBtn.disabled = !boundaryLayer;
   ui.togglePinsBtn.innerHTML = pinsVisible ?
     '<i data-lucide="eye-off"></i><span>Ausblenden</span>' :
     '<i data-lucide="eye"></i><span>Anzeigen</span>';
@@ -1803,14 +3029,19 @@ function updateStats(visiblePoiCount, visibleTransitCount, visibleStationCount) 
   const resolvedStationCount = Number.isFinite(visibleStationCount) ?
     visibleStationCount :
     (ui.transitType.value === "all" ? 0 : getStationsForLines(visibleLines).length);
+  const remainingCells = getRemainingCellCount();
 
   ui.zoomValue.textContent = map ? String(map.getZoom()) : "-";
   ui.pointCountValue.textContent = String(boundaryPoints.length);
   ui.poiCountValue.textContent = String(resolvedPoiCount);
   ui.transitCountValue.textContent = String(resolvedTransitCount);
   ui.stationCountValue.textContent = String(resolvedStationCount);
+  ui.answerCountValue.textContent = String(answers.length);
+  ui.remainingCellCountValue.textContent = searchCells.length > 0 ? String(remainingCells) : "0";
 
-  if (boundaryLayer && boundaryPoints.length >= 3) {
+  if (searchCells.length > 0) {
+    ui.areaValue.textContent = formatArea(getRemainingSearchAreaSquareMeters());
+  } else if (boundaryLayer && boundaryPoints.length >= 3) {
     ui.areaValue.textContent = formatArea(Math.abs(geodesicArea(boundaryPoints)));
   } else {
     ui.areaValue.textContent = "-";
@@ -1843,6 +3074,7 @@ function saveState() {
   }
 
   const state = {
+    gameId,
     view: {
       center: [map.getCenter().lat, map.getCenter().lng],
       zoom: map.getZoom(),

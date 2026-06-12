@@ -118,6 +118,28 @@ def list_answers(game_id: str) -> list[dict[str, Any]]:
     return database.list_answers(game_id)
 
 
+@app.put("/api/games/{game_id}/answers/{answer_id}", response_model=AnswerRecord)
+def update_answer(game_id: str, answer_id: str, payload: AnswerCreate) -> dict[str, Any]:
+    if not database.get_game(game_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="game not found")
+
+    answer = database.update_answer(
+        game_id,
+        answer_id,
+        {
+            "question_type": payload.question_type,
+            "category": payload.category,
+            "question_text": payload.question_text,
+            "answer": payload.answer,
+            "seeker_position": payload.seeker_position.model_dump() if payload.seeker_position else None,
+            "payload": payload.payload,
+        },
+    )
+    if not answer:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="answer not found")
+    return answer
+
+
 @app.delete("/api/games/{game_id}/answers/{answer_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_answer(game_id: str, answer_id: str) -> None:
     if not database.delete_answer(game_id, answer_id):
