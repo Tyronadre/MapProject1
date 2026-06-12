@@ -1,0 +1,15 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      MAPGAME_DB_PATH: /app/data/mapgame.db
+      MAPGAME_CACHE_TTL_SECONDS: "604800"
+      MAPGAME_CACHE_GRID_DEGREES: "0.02"
+      MAPGAME_REQUEST_TIMEOUT_SECONDS: "35"
+    volumes:
+      - ./backend/data:/app/data
+    restart: unless-stopped
+

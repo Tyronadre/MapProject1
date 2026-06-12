@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f8fafc" />
+    <title>IRL Hide and Seek Map</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="styles.css" />
+    <script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script defer src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.js"></script>
+    <script defer src="app.js"></script>
+  </head>
+  <body>
+    <main class="app-shell">
+      <div id="map" aria-label="Spielkarte"></div>
+
+      <header class="top-bar">
+        <div class="brand">
+          <span class="brand-icon" aria-hidden="true"><i data-lucide="map"></i></span>
+          <div class="brand-copy">
+            <h1>Hide and Seek Map</h1>
+            <p id="statusText">Karte wird geladen</p>
+          </div>
+        </div>
+
+        <div class="top-actions" aria-label="Kartenaktionen">
+          <button class="icon-button" id="locateBtn" type="button" title="Position finden" aria-label="Position finden">
+            <i data-lucide="crosshair"></i>
+          </button>
+          <button class="icon-button" id="fitBoundsBtn" type="button" title="Spielbereich anzeigen" aria-label="Spielbereich anzeigen">
+            <i data-lucide="scan"></i>
+          </button>
+        </div>
+      </header>
+
+      <section class="control-panel" aria-labelledby="panelTitle">
+        <div class="panel-handle" aria-hidden="true"></div>
+
+        <div class="panel-title-row">
+          <div>
+            <h2 id="panelTitle">Karte</h2>
+            <p id="modeText">Bereit</p>
+          </div>
+          <span class="status-pill" id="mapStatus">OSM</span>
+        </div>
+
+        <div class="metric-grid" aria-label="Spielstatus">
+          <div class="metric">
+            <span>Suchflaeche</span>
+            <strong id="areaValue">-</strong>
+          </div>
+          <div class="metric">
+            <span>Grenzpunkte</span>
+            <strong id="pointCountValue">0</strong>
+          </div>
+          <div class="metric">
+            <span>Zoom</span>
+            <strong id="zoomValue">-</strong>
+          </div>
+          <div class="metric">
+            <span>Pins</span>
+            <strong id="poiCountValue">0</strong>
+          </div>
+          <div class="metric">
+            <span>Linien</span>
+            <strong id="transitCountValue">0</strong>
+          </div>
+          <div class="metric">
+            <span>Stationen</span>
+            <strong id="stationCountValue">0</strong>
+          </div>
+        </div>
+
+        <div class="tool-section">
+          <div class="section-heading">
+            <h3>Spielgrenze</h3>
+          </div>
+          <div class="button-grid">
+            <button class="tool-button primary" id="drawBoundaryBtn" type="button">
+              <i data-lucide="pencil-line"></i>
+              <span>Zeichnen</span>
+            </button>
+            <button class="tool-button" id="finishBoundaryBtn" type="button" disabled>
+              <i data-lucide="check"></i>
+              <span>Schliessen</span>
+            </button>
+            <button class="tool-button" id="cancelBoundaryBtn" type="button" disabled>
+              <i data-lucide="x"></i>
+              <span>Abbrechen</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="tool-section">
+          <div class="section-heading">
+            <h3>Sucher</h3>
+          </div>
+          <button class="tool-button full-width" id="setSeekerBtn" type="button">
+            <i data-lucide="map-pin"></i>
+            <span>Position setzen</span>
+          </button>
+          <div class="coordinate-row">
+            <span>Koordinaten</span>
+            <strong id="seekerValue">-</strong>
+          </div>
+        </div>
+
+        <div class="tool-section">
+          <div class="section-heading">
+            <h3>Pins</h3>
+            <span class="section-count" id="poiCategoryCount">0 Kategorien</span>
+          </div>
+          <div class="inline-controls">
+            <label class="select-label" for="poiCategory">Typ</label>
+            <select id="poiCategory">
+              <option value="all" selected>Alle Standard-Pins</option>
+              <option value="airport">Commercial airport</option>
+              <option value="rail_station">Rail station</option>
+              <option value="transit_stop">Transit stop</option>
+              <option value="peak">Mountain</option>
+              <option value="park">Park</option>
+              <option value="amusement_park">Amusement park</option>
+              <option value="zoo">Zoo</option>
+              <option value="aquarium">Aquarium</option>
+              <option value="golf_course">Golf course</option>
+              <option value="museum">Museum</option>
+              <option value="cinema">Movie theatre</option>
+              <option value="hospital">Hospital</option>
+              <option value="library">Library</option>
+              <option value="consulate">Foreign consulate</option>
+              <option value="water">Body of water</option>
+            </select>
+          </div>
+          <div class="button-grid">
+            <button class="tool-button primary" id="loadPinsBtn" type="button">
+              <i data-lucide="map-pinned"></i>
+              <span>Pins laden</span>
+            </button>
+            <button class="tool-button" id="setManualPinBtn" type="button">
+              <i data-lucide="pin"></i>
+              <span>Setzen</span>
+            </button>
+            <button class="tool-button" id="togglePinsBtn" type="button" disabled>
+              <i data-lucide="eye-off"></i>
+              <span>Ausblenden</span>
+            </button>
+            <button class="tool-button" id="clearPinsBtn" type="button" disabled>
+              <i data-lucide="eraser"></i>
+              <span>Loeschen</span>
+            </button>
+          </div>
+          <div class="pin-legend" id="pinLegend" aria-label="Geladene Pin-Kategorien"></div>
+        </div>
+
+        <div class="tool-section">
+          <div class="section-heading">
+            <h3>OePNV</h3>
+            <span class="section-count" id="transitTypeCount">0 Linien</span>
+          </div>
+          <div class="inline-controls">
+            <label class="select-label" for="transitType">Linie</label>
+            <select id="transitType">
+              <option value="all" selected>Alle Linien</option>
+            </select>
+          </div>
+          <div class="button-grid">
+            <button class="tool-button" id="focusRmvBtn" type="button">
+              <i data-lucide="train-front"></i>
+              <span>Frankfurt/RMV</span>
+            </button>
+            <button class="tool-button primary" id="loadTransitBtn" type="button">
+              <i data-lucide="route"></i>
+              <span>Linien laden</span>
+            </button>
+            <button class="tool-button" id="toggleTransitBtn" type="button" disabled>
+              <i data-lucide="eye-off"></i>
+              <span>Ausblenden</span>
+            </button>
+            <button class="tool-button" id="clearTransitBtn" type="button" disabled>
+              <i data-lucide="eraser"></i>
+              <span>Loeschen</span>
+            </button>
+          </div>
+          <div class="pin-legend" id="transitLegend" aria-label="Geladene OePNV-Linien"></div>
+        </div>
+
+        <div class="tool-section">
+          <div class="section-heading">
+            <h3>Radar</h3>
+          </div>
+          <div class="inline-controls">
+            <label class="select-label" for="radarDistance">Radius</label>
+            <select id="radarDistance">
+              <option value="400">400 m</option>
+              <option value="800">800 m</option>
+              <option value="1600">1.6 km</option>
+              <option value="4800" selected>4.8 km</option>
+              <option value="8000">8 km</option>
+              <option value="16000">16 km</option>
+              <option value="40000">40 km</option>
+              <option value="80000">80 km</option>
+              <option value="160000">160 km</option>
+            </select>
+          </div>
+          <div class="button-grid">
+            <button class="tool-button primary" id="previewRadarBtn" type="button">
+              <i data-lucide="radio-tower"></i>
+              <span>Anzeigen</span>
+            </button>
+            <button class="tool-button" id="clearRadarBtn" type="button" disabled>
+              <i data-lucide="eraser"></i>
+              <span>Loeschen</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="tool-section danger-zone">
+          <button class="tool-button danger full-width" id="clearGameBtn" type="button">
+            <i data-lucide="trash-2"></i>
+            <span>Karte zuruecksetzen</span>
+          </button>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
