@@ -15,7 +15,14 @@ const MAX_TRANSIT_LINES_ON_MAP = 300;
 const MAX_ALL_QUERY_AREA_KM2 = 900;
 const MAX_SINGLE_QUERY_AREA_KM2 = 5000;
 const MAX_TRANSIT_QUERY_AREA_KM2 = 3200;
+const MAX_AUTO_ALL_QUERY_AREA_KM2 = 350;
+const MAX_AUTO_SINGLE_QUERY_AREA_KM2 = 1500;
+const MAX_AUTO_TRANSIT_QUERY_AREA_KM2 = 1200;
+const MAX_BOUNDARY_PRELOAD_AREA_KM2 = 6000;
+const MAX_BOUNDARY_TRANSIT_PRELOAD_AREA_KM2 = 3200;
 const MAX_SEARCH_CELLS = 2400;
+const AUTO_MAP_LOAD_DEBOUNCE_MS = 700;
+const AUTO_MAP_LOAD_GRID_DEGREES = 0.02;
 const POI_CATEGORY_ORDER = [
   "airport",
   "rail_station",
@@ -210,6 +217,13 @@ const QUESTION_TYPES = {
       ["further", "Further"],
     ],
   },
+  custom: {
+    label: "Custom",
+    answerOptions: [
+      ["inside", "Innerhalb behalten"],
+      ["outside", "Ausserhalb behalten"],
+    ],
+  },
 };
 const MATCHING_QUESTION_CATEGORIES = [
   ["airport", "Commercial airport"],
@@ -273,6 +287,9 @@ const THERMOMETER_DISTANCES = [
 ];
 
 const ui = {
+  controlPanel: document.querySelector(".control-panel"),
+  panelTabs: Array.from(document.querySelectorAll("[data-panel-tab]")),
+  collapsePanelBtn: document.querySelector("#collapsePanelBtn"),
   statusText: document.querySelector("#statusText"),
   modeText: document.querySelector("#modeText"),
   mapStatus: document.querySelector("#mapStatus"),
@@ -305,9 +322,6 @@ const ui = {
   toggleTransitBtn: document.querySelector("#toggleTransitBtn"),
   clearTransitBtn: document.querySelector("#clearTransitBtn"),
   transitLegend: document.querySelector("#transitLegend"),
-  radarDistance: document.querySelector("#radarDistance"),
-  previewRadarBtn: document.querySelector("#previewRadarBtn"),
-  clearRadarBtn: document.querySelector("#clearRadarBtn"),
   questionSyncValue: document.querySelector("#questionSyncValue"),
   questionType: document.querySelector("#questionType"),
   questionCategoryRow: document.querySelector("#questionCategoryRow"),
@@ -322,6 +336,11 @@ const ui = {
   setThermometerEndBtn: document.querySelector("#setThermometerEndBtn"),
   thermometerStartValue: document.querySelector("#thermometerStartValue"),
   thermometerEndValue: document.querySelector("#thermometerEndValue"),
+  customPolygonFields: document.querySelector("#customPolygonFields"),
+  drawCustomPolygonBtn: document.querySelector("#drawCustomPolygonBtn"),
+  finishCustomPolygonBtn: document.querySelector("#finishCustomPolygonBtn"),
+  cancelCustomPolygonBtn: document.querySelector("#cancelCustomPolygonBtn"),
+  customPolygonValue: document.querySelector("#customPolygonValue"),
   saveQuestionBtn: document.querySelector("#saveQuestionBtn"),
   cancelQuestionEditBtn: document.querySelector("#cancelQuestionEditBtn"),
   questionStatus: document.querySelector("#questionStatus"),
@@ -333,14 +352,21 @@ let map;
 let savedState;
 let isDrawingBoundary = false;
 let isSettingSeeker = false;
+let activePanel = "info";
+let isPanelCollapsed = false;
 let boundaryPoints = [];
 let draftLayer = null;
 let boundaryLayer = null;
-let searchAreaLayer = null;
+let outsideBoundaryLayer = null;
 let seekerMarker = null;
 let accuracyLayer = null;
 let radarLayer = null;
 let draftMarkers = [];
+let isDrawingCustomPolygon = false;
+let customPolygonPoints = [];
+let customPolygonLayer = null;
+let customDraftLayer = null;
+let customDraftMarkers = [];
 let searchRenderer = null;
 let searchGridLayer = null;
 let questionGeometryLayer = null;
@@ -363,6 +389,11 @@ let answers = [];
 let answerEffects = new Map();
 let editingAnswerId = null;
 let gameSyncAvailable = false;
+let autoMapLoadTimer = null;
+let lastAutoPinsKey = "";
+let lastAutoTransitKey = "";
+let isAutoLoadingMapData = false;
+let hasPendingAutoMapLoad = false;
 
 document.addEventListener("DOMContentLoaded", init);
 
@@ -374,6 +405,8 @@ function init() {
   }
 
   savedState = loadState();
+  activePanel = savedState.activePanel || "info";
+  isPanelCollapsed = savedState.panelCollapsed === true;
 
   map = L.map("map", {
     zoomControl: false,
@@ -397,17 +430,24 @@ function init() {
   poiLayer = L.layerGroup().addTo(map);
 
   map.on("click", handleMapClick);
-  map.on("zoomend moveend", persistView);
+  map.on("zoomend moveend", () => {
+    persistView();
+    renderPoiMarkers();
+    renderTransitLines();
+    scheduleAutoMapDataLoad();
+  });
   map.on("zoomend", () => updateStats());
   map.on("locationfound", handleLocationFound);
   map.on("locationerror", handleLocationError);
 
   bindControls();
+  applyPanelState();
   populateQuestionCatalog();
   restoreSavedLayers(savedState);
   updateQuestionForm();
   updateThermometerValues();
   initGameSession();
+  scheduleAutoMapDataLoad();
   updateStats();
   setStatus("Bereit", "OSM");
 
@@ -417,13 +457,20 @@ function init() {
 }
 
 function bindControls() {
+  ui.panelTabs.forEach((button) => {
+    button.addEventListener("click", () => switchPanel(button.dataset.panelTab));
+  });
+  ui.collapsePanelBtn.addEventListener("click", togglePanelCollapsed);
   ui.locateBtn.addEventListener("click", locateSeeker);
   ui.fitBoundsBtn.addEventListener("click", fitGameView);
   ui.drawBoundaryBtn.addEventListener("click", toggleBoundaryDrawing);
   ui.finishBoundaryBtn.addEventListener("click", finishBoundary);
   ui.cancelBoundaryBtn.addEventListener("click", cancelBoundaryDraft);
   ui.setSeekerBtn.addEventListener("click", toggleSeekerPlacement);
-  ui.poiCategory.addEventListener("change", renderPoiMarkers);
+  ui.poiCategory.addEventListener("change", () => {
+    renderPoiMarkers();
+    scheduleAutoMapDataLoad(true);
+  });
   ui.loadPinsBtn.addEventListener("click", loadPins);
   ui.setManualPinBtn.addEventListener("click", toggleManualPinPlacement);
   ui.togglePinsBtn.addEventListener("click", togglePins);
@@ -433,23 +480,65 @@ function bindControls() {
   ui.loadTransitBtn.addEventListener("click", loadTransitLines);
   ui.toggleTransitBtn.addEventListener("click", toggleTransitLines);
   ui.clearTransitBtn.addEventListener("click", clearTransitLines);
-  ui.previewRadarBtn.addEventListener("click", previewRadar);
-  ui.clearRadarBtn.addEventListener("click", clearRadar);
   ui.questionType.addEventListener("change", updateQuestionForm);
   ui.questionDistance.addEventListener("change", updateQuestionForm);
   ui.questionCategory.addEventListener("change", updateQuestionStatus);
   ui.questionAnswer.addEventListener("change", updateQuestionStatus);
   ui.setThermometerStartBtn.addEventListener("click", setThermometerStartFromSeeker);
   ui.setThermometerEndBtn.addEventListener("click", toggleThermometerEndPlacement);
+  ui.drawCustomPolygonBtn.addEventListener("click", toggleCustomPolygonDrawing);
+  ui.finishCustomPolygonBtn.addEventListener("click", finishCustomPolygon);
+  ui.cancelCustomPolygonBtn.addEventListener("click", cancelCustomPolygonDraft);
   ui.saveQuestionBtn.addEventListener("click", saveQuestionAnswer);
   ui.cancelQuestionEditBtn.addEventListener("click", cancelQuestionEdit);
   ui.answerList.addEventListener("click", handleAnswerListClick);
   ui.clearGameBtn.addEventListener("click", clearGame);
 }
 
+function switchPanel(panelId) {
+  if (!["info", "questions", "data"].includes(panelId)) {
+    return;
+  }
+
+  activePanel = panelId;
+  isPanelCollapsed = false;
+  applyPanelState();
+  saveState();
+}
+
+function togglePanelCollapsed() {
+  isPanelCollapsed = !isPanelCollapsed;
+  applyPanelState();
+  saveState();
+}
+
+function applyPanelState() {
+  ui.controlPanel.classList.toggle("is-collapsed", isPanelCollapsed);
+  ui.collapsePanelBtn.classList.toggle("is-active", isPanelCollapsed);
+  ui.collapsePanelBtn.title = isPanelCollapsed ? "Menue anzeigen" : "Menue ausblenden";
+  ui.collapsePanelBtn.setAttribute("aria-label", ui.collapsePanelBtn.title);
+  ui.collapsePanelBtn.innerHTML = `<i data-lucide="${isPanelCollapsed ? "panel-left-open" : "panel-left-close"}"></i>`;
+
+  if (window.lucide) {
+    window.lucide.createIcons();
+  }
+
+  ui.panelTabs.forEach((button) => {
+    button.classList.toggle("is-active", button.dataset.panelTab === activePanel);
+  });
+  document.querySelectorAll("[data-panel]").forEach((section) => {
+    section.classList.toggle("is-panel-hidden", section.dataset.panel !== activePanel);
+  });
+}
+
 function handleMapClick(event) {
   if (isDrawingBoundary) {
     addBoundaryPoint(event.latlng);
+    return;
+  }
+
+  if (isDrawingCustomPolygon) {
+    addCustomPolygonPoint(event.latlng);
     return;
   }
 
@@ -473,6 +562,7 @@ function handleMapClick(event) {
 function toggleBoundaryDrawing() {
   setSeekerPlacement(false);
   setManualPinPlacement(false);
+  setCustomPolygonDrawing(false);
   isDrawingBoundary = !isDrawingBoundary;
 
   if (isDrawingBoundary) {
@@ -556,12 +646,19 @@ function setBoundary(points) {
 
   const latlngs = points.map((point) => L.latLng(point.lat, point.lng));
 
-  searchAreaLayer = L.polygon(latlngs, {
-    color: "#138a63",
-    fillColor: "#138a63",
-    fillOpacity: 0.15,
-    opacity: 0.85,
-    weight: 2,
+  outsideBoundaryLayer = L.polygon([
+    [
+      L.latLng(-85, -180),
+      L.latLng(-85, 180),
+      L.latLng(85, 180),
+      L.latLng(85, -180),
+    ],
+    latlngs,
+  ], {
+    stroke: false,
+    fillColor: "#172026",
+    fillOpacity: 0.28,
+    interactive: false,
   }).addTo(map);
 
   boundaryLayer = L.polygon(latlngs, {
@@ -569,14 +666,17 @@ function setBoundary(points) {
     fill: false,
     opacity: 0.95,
     weight: 3,
+    interactive: false,
   }).addTo(map);
 
   boundaryPoints = latlngs;
   rebuildSearchGrid();
   applyAnswersToSearchGrid();
   syncGameBounds();
+  preloadBoundaryMapData();
   renderPoiMarkers();
   renderTransitLines();
+  refreshOverlayOrder();
 }
 
 function clearBoundary() {
@@ -585,9 +685,9 @@ function clearBoundary() {
     boundaryLayer = null;
   }
 
-  if (searchAreaLayer) {
-    map.removeLayer(searchAreaLayer);
-    searchAreaLayer = null;
+  if (outsideBoundaryLayer) {
+    map.removeLayer(outsideBoundaryLayer);
+    outsideBoundaryLayer = null;
   }
 
   boundaryPoints = [];
@@ -599,6 +699,34 @@ function clearBoundary() {
   renderPoiMarkers();
   renderTransitLines();
   updateStats();
+}
+
+function refreshOverlayOrder() {
+  if (outsideBoundaryLayer?.bringToBack) {
+    outsideBoundaryLayer.bringToBack();
+  }
+
+  bringLayerGroupToFront(searchGridLayer);
+  bringLayerGroupToFront(questionGeometryLayer);
+  bringLayerGroupToFront(transitLayer);
+  bringLayerGroupToFront(transitStationLayer);
+  bringLayerGroupToFront(poiLayer);
+
+  if (boundaryLayer?.bringToFront) {
+    boundaryLayer.bringToFront();
+  }
+}
+
+function bringLayerGroupToFront(layerGroup) {
+  if (!layerGroup?.eachLayer) {
+    return;
+  }
+
+  layerGroup.eachLayer((layer) => {
+    if (layer?.bringToFront) {
+      layer.bringToFront();
+    }
+  });
 }
 
 function clearDraft() {
@@ -626,6 +754,7 @@ function setSeekerPlacement(active) {
     isDrawingBoundary = false;
     setManualPinPlacement(false);
     setThermometerEndPlacement(false);
+    setCustomPolygonDrawing(false);
     clearDraft();
     setStatus("Sucherposition setzen", "Position");
   } else if (!isDrawingBoundary) {
@@ -788,6 +917,185 @@ function getPoiQueryBounds() {
   return map.getBounds();
 }
 
+function scheduleAutoMapDataLoad(force = false) {
+  if (!map) {
+    return;
+  }
+
+  if (force) {
+    lastAutoPinsKey = "";
+    lastAutoTransitKey = "";
+  }
+
+  window.clearTimeout(autoMapLoadTimer);
+  autoMapLoadTimer = window.setTimeout(loadVisibleMapDataFromBackend, AUTO_MAP_LOAD_DEBOUNCE_MS);
+}
+
+async function loadVisibleMapDataFromBackend() {
+  if (!map) {
+    return;
+  }
+
+  if (isAutoLoadingMapData) {
+    hasPendingAutoMapLoad = true;
+    return;
+  }
+
+  const bounds = map.getBounds();
+  isAutoLoadingMapData = true;
+
+  try {
+    const [pinResult, transitResult] = await Promise.all([
+      autoLoadPinsFromBackend(bounds),
+      autoLoadTransitFromBackend(bounds),
+    ]);
+    const addedPins = pinResult.addedCount || 0;
+    const addedLines = transitResult.addedCount || 0;
+
+    if (addedPins > 0 || addedLines > 0) {
+      setStatus(`${addedPins} Pins, ${addedLines} Linien geladen`, "Backend");
+    }
+  } finally {
+    isAutoLoadingMapData = false;
+    if (hasPendingAutoMapLoad) {
+      hasPendingAutoMapLoad = false;
+      scheduleAutoMapDataLoad();
+    }
+    updateControls();
+  }
+}
+
+async function autoLoadPinsFromBackend(bounds) {
+  const categoryIds = getAutoPoiCategoryIds();
+  const queryArea = boundsToAreaKm2(bounds);
+  const maxArea = categoryIds.length > 1 ? MAX_AUTO_ALL_QUERY_AREA_KM2 : MAX_AUTO_SINGLE_QUERY_AREA_KM2;
+
+  if (queryArea > maxArea) {
+    return { skipped: true, addedCount: 0 };
+  }
+
+  const key = buildAutoLoadKey("pins", categoryIds, bounds);
+
+  if (key === lastAutoPinsKey) {
+    return { skipped: false, addedCount: 0 };
+  }
+
+  lastAutoPinsKey = key;
+  const backendResult = await tryLoadPinsFromBackend(categoryIds, bounds);
+
+  if (!backendResult) {
+    setStatus("Backend fuer Pins nicht erreichbar", "Backend");
+    return { skipped: false, addedCount: 0 };
+  }
+
+  const addedCount = mergePois(backendResult.items);
+  pinsVisible = true;
+  renderPoiMarkers();
+  applyAnswersToSearchGrid();
+  saveState();
+  return { skipped: false, addedCount };
+}
+
+async function autoLoadTransitFromBackend(bounds) {
+  const lineIds = ["all"];
+  const queryArea = boundsToAreaKm2(bounds);
+
+  if (queryArea > MAX_AUTO_TRANSIT_QUERY_AREA_KM2) {
+    return { skipped: true, addedCount: 0 };
+  }
+
+  const key = buildAutoLoadKey("transit", lineIds, bounds);
+
+  if (key === lastAutoTransitKey) {
+    return { skipped: false, addedCount: 0 };
+  }
+
+  lastAutoTransitKey = key;
+  const backendResult = await tryLoadTransitFromBackend(lineIds, bounds);
+
+  if (!backendResult) {
+    setStatus("Backend fuer Linien nicht erreichbar", "Backend");
+    return { skipped: false, addedCount: 0 };
+  }
+
+  const addedCount = mergeTransitLines(backendResult.lines);
+  transitVisible = true;
+  renderTransitLines();
+  applyAnswersToSearchGrid();
+  return { skipped: false, addedCount };
+}
+
+async function preloadBoundaryMapData() {
+  if (!boundaryLayer) {
+    return;
+  }
+
+  const bounds = boundaryLayer.getBounds();
+  const queryArea = boundsToAreaKm2(bounds);
+
+  if (queryArea > MAX_BOUNDARY_PRELOAD_AREA_KM2) {
+    setStatus(`Grenze zu gross fuer Preload: ${Math.round(queryArea).toLocaleString("de-DE")} km2`, "Backend");
+    return;
+  }
+
+  setStatus("Spielbereich wird vorgeladen", "Backend");
+
+  try {
+    let addedPins = 0;
+
+    for (const categoryId of POI_CATEGORY_ORDER) {
+      const pinResult = await tryLoadPinsFromBackend([categoryId], bounds);
+      addedPins += pinResult ? mergePois(pinResult.items) : 0;
+    }
+
+    const transitResult = queryArea <= MAX_BOUNDARY_TRANSIT_PRELOAD_AREA_KM2 ?
+      await tryLoadTransitFromBackend(["all"], bounds) :
+      null;
+    const addedLines = transitResult ? mergeTransitLines(transitResult.lines) : 0;
+
+    pinsVisible = true;
+    transitVisible = transitVisible || Boolean(transitResult);
+    renderPoiMarkers();
+    renderTransitLines();
+    applyAnswersToSearchGrid();
+    saveState();
+    const transitNote = queryArea > MAX_BOUNDARY_TRANSIT_PRELOAD_AREA_KM2 ? ", Linien nur im Viewport" : `, ${addedLines} Linien`;
+    setStatus(`${addedPins} Pins${transitNote} vorgeladen`, "Backend");
+  } catch {
+    setStatus("Preload konnte nicht abgeschlossen werden", "Backend");
+  }
+}
+
+function getAutoPoiCategoryIds() {
+  if (ui.poiCategory.value && ui.poiCategory.value !== "all") {
+    return [ui.poiCategory.value];
+  }
+
+  return POI_CATEGORY_ORDER.filter((categoryId) => POI_CATEGORIES[categoryId].includeInAll);
+}
+
+function buildAutoLoadKey(type, categoryIds, bounds) {
+  const snapped = {
+    south: snapCoordinate(bounds.getSouth()),
+    west: snapCoordinate(bounds.getWest()),
+    north: snapCoordinate(bounds.getNorth()),
+    east: snapCoordinate(bounds.getEast()),
+  };
+
+  return [
+    type,
+    categoryIds.slice().sort().join(","),
+    snapped.south,
+    snapped.west,
+    snapped.north,
+    snapped.east,
+  ].join("|");
+}
+
+function snapCoordinate(value) {
+  return Math.round(value / AUTO_MAP_LOAD_GRID_DEGREES) * AUTO_MAP_LOAD_GRID_DEGREES;
+}
+
 function buildOverpassQuery(categoryIds, bounds) {
   const bbox = [
     bounds.getSouth(),
@@ -934,6 +1242,7 @@ function renderPoiMarkers() {
     updateStats(visiblePois.length);
     updatePinLegend(visiblePois);
     updateControls();
+    refreshOverlayOrder();
     return;
   }
 
@@ -950,6 +1259,7 @@ function renderPoiMarkers() {
   updateStats(visiblePois.length);
   updatePinLegend(visiblePois);
   updateControls();
+  refreshOverlayOrder();
 }
 
 function getVisiblePois() {
@@ -957,7 +1267,7 @@ function getVisiblePois() {
 
   return pois.filter((poi) => {
     const categoryMatches = selectedCategory === "all" || poi.category === selectedCategory;
-    return categoryMatches && isPoiInsideBoundary(poi);
+    return categoryMatches && isPoiInsideBoundary(poi) && isPoiInsideMapView(poi);
   });
 }
 
@@ -1014,6 +1324,7 @@ function setManualPinPlacement(active) {
     isDrawingBoundary = false;
     setSeekerPlacement(false);
     setThermometerEndPlacement(false);
+    setCustomPolygonDrawing(false);
     clearDraft();
     setStatus("Pinposition setzen", "Pins");
   } else if (!isDrawingBoundary && !isSettingSeeker && !isSettingThermometerEnd) {
@@ -1061,6 +1372,7 @@ function togglePins() {
 function clearPins() {
   pois = [];
   pinsVisible = true;
+  lastAutoPinsKey = "";
   renderPoiMarkers();
   saveState();
   setStatus("Pins geloescht", "Pins");
@@ -1090,6 +1402,14 @@ function isPoiInsideBoundary(poi) {
   }
 
   return pointInPolygon(L.latLng(poi.lat, poi.lng), boundaryPoints);
+}
+
+function isPoiInsideMapView(poi) {
+  if (!map) {
+    return true;
+  }
+
+  return map.getBounds().pad(0.12).contains([poi.lat, poi.lng]);
 }
 
 function pointInPolygon(point, polygon) {
@@ -1293,6 +1613,17 @@ function normalizeLatLngObject(value) {
   return { lat, lng };
 }
 
+function normalizePolygonPoints(points) {
+  if (!Array.isArray(points)) {
+    return [];
+  }
+
+  return points
+    .map(normalizeLatLngObject)
+    .filter(Boolean)
+    .map((point) => L.latLng(point.lat, point.lng));
+}
+
 function populateQuestionCatalog() {
   ui.questionType.innerHTML = Object.entries(QUESTION_TYPES)
     .map(([type, config]) => `<option value="${type}">${escapeHtml(config.label)}</option>`)
@@ -1308,10 +1639,12 @@ function updateQuestionForm() {
   const hasCategory = type === "matching" || type === "measuring";
   const hasDistance = type === "radar" || type === "thermometer";
   const hasThermometerFields = type === "thermometer";
+  const hasCustomPolygonFields = type === "custom";
 
   ui.questionCategoryRow.classList.toggle("is-hidden", !hasCategory);
   ui.questionDistanceRow.classList.toggle("is-hidden", !hasDistance);
   ui.thermometerFields.classList.toggle("is-hidden", !hasThermometerFields);
+  ui.customPolygonFields.classList.toggle("is-hidden", !hasCustomPolygonFields);
   ui.questionCustomDistanceRow.classList.toggle(
     "is-hidden",
     !(type === "radar" && ui.questionDistance.value === "custom"),
@@ -1394,6 +1727,11 @@ function updateQuestionStatus(message) {
     return;
   }
 
+  if (type === "custom" && customPolygonPoints.length < 3) {
+    ui.questionStatus.textContent = "Custom-Polygon fehlt";
+    return;
+  }
+
   ui.questionStatus.textContent = `${getRemainingCellCount()} Zellen verbleibend`;
 }
 
@@ -1426,6 +1764,7 @@ function setThermometerEndPlacement(active) {
     isDrawingBoundary = false;
     setSeekerPlacement(false);
     setManualPinPlacement(false);
+    setCustomPolygonDrawing(false);
     clearDraft();
     setStatus("Thermometer-Ende setzen", "Thermo");
   } else if (!isDrawingBoundary && !isSettingSeeker && !isSettingPoi) {
@@ -1448,6 +1787,121 @@ function updateThermometerValues() {
   ui.thermometerEndValue.textContent = thermometerEnd ?
     `${thermometerEnd.lat.toFixed(5)}, ${thermometerEnd.lng.toFixed(5)}` :
     "-";
+}
+
+function toggleCustomPolygonDrawing() {
+  setCustomPolygonDrawing(!isDrawingCustomPolygon);
+}
+
+function setCustomPolygonDrawing(active) {
+  isDrawingCustomPolygon = active;
+
+  if (active) {
+    isDrawingBoundary = false;
+    setSeekerPlacement(false);
+    setManualPinPlacement(false);
+    setThermometerEndPlacement(false);
+    clearDraft();
+    clearCustomPolygonDraft();
+    customPolygonPoints = [];
+    setStatus("Custom-Polygon zeichnen", "Fragen");
+  } else if (!isDrawingBoundary && !isSettingSeeker && !isSettingPoi && !isSettingThermometerEnd) {
+    setStatus("Bereit", "OSM");
+  }
+
+  renderCustomPolygonDraft();
+  updateCustomPolygonValue();
+  updateControls();
+}
+
+function addCustomPolygonPoint(latlng) {
+  customPolygonPoints.push(L.latLng(latlng.lat, latlng.lng));
+
+  const marker = L.marker(latlng, {
+    icon: L.divIcon({
+      className: "",
+      html: '<span class="draft-marker"></span>',
+      iconSize: [14, 14],
+      iconAnchor: [7, 7],
+    }),
+    interactive: false,
+  }).addTo(map);
+
+  customDraftMarkers.push(marker);
+  renderCustomPolygonDraft();
+  updateCustomPolygonValue();
+  setStatus(`${customPolygonPoints.length} Custom-Punkte gesetzt`, "Fragen");
+  updateControls();
+}
+
+function renderCustomPolygonDraft() {
+  if (customDraftLayer) {
+    map.removeLayer(customDraftLayer);
+    customDraftLayer = null;
+  }
+
+  if (customPolygonLayer) {
+    map.removeLayer(customPolygonLayer);
+    customPolygonLayer = null;
+  }
+
+  if (customPolygonPoints.length >= 3) {
+    customPolygonLayer = L.polygon(customPolygonPoints, {
+      color: "#7c3aed",
+      fillColor: "#7c3aed",
+      fillOpacity: 0.12,
+      opacity: 0.95,
+      weight: 2,
+    }).addTo(map);
+    return;
+  }
+
+  if (customPolygonPoints.length >= 2) {
+    customDraftLayer = L.polyline(customPolygonPoints, {
+      color: "#7c3aed",
+      dashArray: "8 7",
+      opacity: 0.9,
+      weight: 3,
+    }).addTo(map);
+  }
+}
+
+function finishCustomPolygon() {
+  if (customPolygonPoints.length < 3) {
+    updateQuestionStatus("Mindestens 3 Custom-Punkte");
+    return;
+  }
+
+  setCustomPolygonDrawing(false);
+  updateQuestionStatus("Custom-Polygon bereit");
+}
+
+function cancelCustomPolygonDraft() {
+  clearCustomPolygonDraft();
+  customPolygonPoints = [];
+  isDrawingCustomPolygon = false;
+  updateCustomPolygonValue();
+  updateQuestionStatus();
+  updateControls();
+}
+
+function clearCustomPolygonDraft() {
+  if (customDraftLayer) {
+    map.removeLayer(customDraftLayer);
+    customDraftLayer = null;
+  }
+
+  if (customPolygonLayer) {
+    map.removeLayer(customPolygonLayer);
+    customPolygonLayer = null;
+  }
+
+  customDraftMarkers.forEach((marker) => marker.remove());
+  customDraftMarkers = [];
+}
+
+function updateCustomPolygonValue() {
+  ui.customPolygonValue.textContent = String(customPolygonPoints.length);
 }
 
 async function saveQuestionAnswer() {
@@ -1530,6 +1984,14 @@ function buildQuestionAnswerPayload() {
     payload.end_position = thermometerEnd;
   }
 
+  if (type === "custom") {
+    if (customPolygonPoints.length < 3) {
+      throw new Error("Custom-Polygon fehlt");
+    }
+
+    payload.polygon = customPolygonPoints.map(serializeLatLng);
+  }
+
   return {
     question_type: type,
     category: category || null,
@@ -1573,6 +2035,10 @@ function buildQuestionText(type, category, payload) {
 
   if (type === "radar") {
     return `Are you within ${payload.distance_label} of me?`;
+  }
+
+  if (type === "custom") {
+    return "Custom polygon";
   }
 
   return `After traveling for ${payload.distance_label}, am I closer or further away from you?`;
@@ -1620,6 +2086,7 @@ function renderAnswerList() {
   }
 
   updateStats();
+  refreshOverlayOrder();
 }
 
 function formatAnswerValue(value) {
@@ -1628,6 +2095,8 @@ function formatAnswerValue(value) {
     no: "Nein",
     closer: "Closer",
     further: "Further",
+    inside: "Innerhalb behalten",
+    outside: "Ausserhalb behalten",
   };
   return labels[value] ?? value;
 }
@@ -1689,6 +2158,25 @@ function editAnswer(answerId) {
     thermometerStart = normalizeLatLngObject(answer.payload.start_position);
     thermometerEnd = normalizeLatLngObject(answer.payload.end_position);
     updateThermometerValues();
+  }
+
+  if (answer.questionType === "custom") {
+    customPolygonPoints = normalizePolygonPoints(answer.payload.polygon);
+    clearCustomPolygonDraft();
+    customPolygonPoints.forEach((point) => {
+      const marker = L.marker(point, {
+        icon: L.divIcon({
+          className: "",
+          html: '<span class="draft-marker"></span>',
+          iconSize: [14, 14],
+          iconAnchor: [7, 7],
+        }),
+        interactive: false,
+      }).addTo(map);
+      customDraftMarkers.push(marker);
+    });
+    renderCustomPolygonDraft();
+    updateCustomPolygonValue();
   }
 
   ui.questionAnswer.value = answer.answer;
@@ -1901,6 +2389,16 @@ function buildQuestionContext(answer) {
     return { applicable: true, start, end };
   }
 
+  if (answer.questionType === "custom") {
+    const polygon = normalizePolygonPoints(answer.payload.polygon);
+
+    if (polygon.length < 3) {
+      return { applicable: false, reason: "Custom-Polygon fehlt" };
+    }
+
+    return { applicable: true, polygon };
+  }
+
   if (answer.questionType === "matching") {
     const features = getQuestionFeatures(answer.category);
 
@@ -1958,6 +2456,11 @@ function cellMatchesAnswer(cell, answer, context) {
     return answer.answer === "closer" ? closerAfterTravel : !closerAfterTravel;
   }
 
+  if (answer.questionType === "custom") {
+    const inside = pointInPolygon(cell.center, context.polygon);
+    return answer.answer === "inside" ? inside : !inside;
+  }
+
   if (answer.questionType === "matching") {
     const cellValue = getMatchingValueForPoint(cell.center, answer.category, context.features);
 
@@ -1992,17 +2495,21 @@ function renderSearchGrid() {
   searchGridLayer.clearLayers();
 
   searchCells.forEach((cell) => {
-    const possible = cell.status !== "excluded";
+    if (cell.status !== "excluded") {
+      return;
+    }
+
     L.rectangle(cell.bounds, {
       renderer: searchRenderer,
       interactive: false,
       stroke: false,
-      fillColor: possible ? "#138a63" : "#b42318",
-      fillOpacity: possible ? 0.18 : 0.22,
+      fillColor: "#b42318",
+      fillOpacity: 0.24,
     }).addTo(searchGridLayer);
   });
 
   updateStats();
+  refreshOverlayOrder();
 }
 
 function renderQuestionGeometry() {
@@ -2038,7 +2545,24 @@ function renderQuestionGeometry() {
         }).addTo(questionGeometryLayer);
       }
     }
+
+    if (answer.questionType === "custom") {
+      const polygon = normalizePolygonPoints(answer.payload.polygon);
+
+      if (polygon.length >= 3) {
+        L.polygon(polygon, {
+          color: answer.answer === "inside" ? "#138a63" : "#b42318",
+          fillColor: answer.answer === "inside" ? "#138a63" : "#b42318",
+          fillOpacity: 0.1,
+          opacity: 0.85,
+          weight: 2,
+          interactive: false,
+        }).addTo(questionGeometryLayer);
+      }
+    }
   });
+
+  refreshOverlayOrder();
 }
 
 function getQuestionFeatures(category) {
@@ -2519,6 +3043,7 @@ function renderTransitLines() {
     updateStats(undefined, visibleLines.length, 0);
     updateTransitLegend(visibleLines);
     updateControls();
+    refreshOverlayOrder();
     return;
   }
 
@@ -2539,6 +3064,7 @@ function renderTransitLines() {
   updateStats(undefined, visibleLines.length, visibleStations.length);
   updateTransitLegend(visibleLines);
   updateControls();
+  refreshOverlayOrder();
 }
 
 function getVisibleTransitLines() {
@@ -2546,7 +3072,7 @@ function getVisibleTransitLines() {
 
   return transitLines.filter((line) => {
     const typeMatches = selectedType === "all" || line.id === selectedType || line.ref === selectedType;
-    return typeMatches && isTransitLineInsideBoundary(line);
+    return typeMatches && isTransitLineInsideBoundary(line) && isTransitLineInsideMapView(line);
   });
 }
 
@@ -2558,6 +3084,7 @@ function createTransitLine(line) {
     opacity: ui.transitType.value === "all" ? 0.78 : 0.95,
     weight: getTransitLineWeight(lineStyle),
     smoothFactor: 1.4,
+    interactive: true,
     bubblingMouseEvents: false,
   });
 
@@ -2572,7 +3099,26 @@ function createTransitLine(line) {
     </div>
   `);
 
+  pathLayer.on("click", (event) => {
+    if (event.originalEvent) {
+      L.DomEvent.stop(event.originalEvent);
+    }
+    selectTransitLine(line.id);
+  });
+
   return pathLayer;
+}
+
+function selectTransitLine(lineId) {
+  if (!transitLines.some((line) => line.id === lineId)) {
+    return;
+  }
+
+  ui.transitType.value = lineId;
+  transitVisible = true;
+  renderTransitLines();
+  const selectedLine = transitLines.find((line) => line.id === lineId);
+  setStatus(`${selectedLine?.ref || "Linie"} ausgewaehlt`, "OePNV");
 }
 
 function getTransitLineWeight(transitType) {
@@ -2599,6 +3145,7 @@ function toggleTransitLines() {
 function clearTransitLines() {
   transitLines = [];
   transitVisible = true;
+  lastAutoTransitKey = "";
   updateTransitLineOptions();
   renderTransitLines();
   setStatus("Linien geloescht", "OePNV");
@@ -2894,6 +3441,18 @@ function isTransitLineInsideBoundary(line) {
   return line.paths.some((path) => boundaryLayer.getBounds().intersects(L.latLngBounds(path)));
 }
 
+function isTransitLineInsideMapView(line) {
+  if (!map) {
+    return true;
+  }
+
+  const viewBounds = map.getBounds().pad(0.12);
+  const pathMatches = line.paths.some((path) => viewBounds.intersects(L.latLngBounds(path)));
+  const stationMatches = line.stations.some((station) => viewBounds.contains([station.lat, station.lng]));
+
+  return pathMatches || stationMatches;
+}
+
 function isStationInsideBoundary(station) {
   if (!boundaryLayer || boundaryPoints.length < 3) {
     return true;
@@ -2938,7 +3497,9 @@ function clearRadar() {
     radarLayer = null;
   }
 
-  ui.clearRadarBtn.disabled = true;
+  if (ui.clearRadarBtn) {
+    ui.clearRadarBtn.disabled = true;
+  }
 }
 
 function fitGameView() {
@@ -2959,6 +3520,9 @@ function clearGame() {
   clearBoundary();
   clearDraft();
   clearRadar();
+  clearCustomPolygonDraft();
+  customPolygonPoints = [];
+  updateCustomPolygonValue();
   if (questionGeometryLayer) {
     questionGeometryLayer.clearLayers();
   }
@@ -2973,10 +3537,14 @@ function clearGame() {
   gameId = null;
   gameSyncAvailable = false;
   editingAnswerId = null;
+  lastAutoPinsKey = "";
+  lastAutoTransitKey = "";
+  hasPendingAutoMapLoad = false;
   boundaryPoints = [];
   searchCells = [];
   renderSearchGrid();
   isDrawingBoundary = false;
+  setCustomPolygonDrawing(false);
   setThermometerEndPlacement(false);
   setSeekerPlacement(false);
 
@@ -3003,8 +3571,11 @@ function updateControls() {
   ui.setSeekerBtn.classList.toggle("is-active", isSettingSeeker);
   ui.setManualPinBtn.classList.toggle("is-active", isSettingPoi);
   ui.setThermometerEndBtn.classList.toggle("is-active", isSettingThermometerEnd);
+  ui.drawCustomPolygonBtn.classList.toggle("is-active", isDrawingCustomPolygon);
   ui.finishBoundaryBtn.disabled = !isDrawingBoundary || boundaryPoints.length < 3;
   ui.cancelBoundaryBtn.disabled = !isDrawingBoundary;
+  ui.finishCustomPolygonBtn.disabled = !isDrawingCustomPolygon || customPolygonPoints.length < 3;
+  ui.cancelCustomPolygonBtn.disabled = !isDrawingCustomPolygon && customPolygonPoints.length === 0;
   ui.togglePinsBtn.disabled = pois.length === 0;
   ui.clearPinsBtn.disabled = pois.length === 0;
   ui.toggleTransitBtn.disabled = transitLines.length === 0;
@@ -3075,6 +3646,8 @@ function saveState() {
 
   const state = {
     gameId,
+    activePanel,
+    panelCollapsed: isPanelCollapsed,
     view: {
       center: [map.getCenter().lat, map.getCenter().lng],
       zoom: map.getZoom(),

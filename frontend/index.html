@@ -25,6 +25,9 @@
         </div>
 
         <div class="top-actions" aria-label="Kartenaktionen">
+          <button class="icon-button" id="collapsePanelBtn" type="button" title="Menue ausblenden" aria-label="Menue ausblenden">
+            <i data-lucide="panel-left-close"></i>
+          </button>
           <button class="icon-button" id="locateBtn" type="button" title="Position finden" aria-label="Position finden">
             <i data-lucide="crosshair"></i>
           </button>
@@ -45,7 +48,13 @@
           <span class="status-pill" id="mapStatus">OSM</span>
         </div>
 
-        <div class="metric-grid" aria-label="Spielstatus">
+        <div class="panel-tabs" aria-label="Menuebereiche">
+          <button class="panel-tab is-active" type="button" data-panel-tab="info">Info</button>
+          <button class="panel-tab" type="button" data-panel-tab="questions">Fragen</button>
+          <button class="panel-tab" type="button" data-panel-tab="data">Pins & OePNV</button>
+        </div>
+
+        <div class="metric-grid" aria-label="Spielstatus" data-panel="info">
           <div class="metric">
             <span>Suchflaeche</span>
             <strong id="areaValue">-</strong>
@@ -80,7 +89,7 @@
           </div>
         </div>
 
-        <div class="tool-section">
+        <div class="tool-section" data-panel="info">
           <div class="section-heading">
             <h3>Spielgrenze</h3>
           </div>
@@ -100,7 +109,7 @@
           </div>
         </div>
 
-        <div class="tool-section">
+        <div class="tool-section" data-panel="info">
           <div class="section-heading">
             <h3>Sucher</h3>
           </div>
@@ -114,7 +123,7 @@
           </div>
         </div>
 
-        <div class="tool-section question-section">
+        <div class="tool-section question-section" data-panel="questions">
           <div class="section-heading">
             <h3>Fragen</h3>
             <span class="section-count" id="questionSyncValue">Server -</span>
@@ -157,6 +166,24 @@
               <strong id="thermometerEndValue">-</strong>
             </div>
           </div>
+          <div class="custom-polygon-fields is-hidden" id="customPolygonFields">
+            <button class="tool-button primary" id="drawCustomPolygonBtn" type="button">
+              <i data-lucide="pencil-line"></i>
+              <span>Polygon zeichnen</span>
+            </button>
+            <button class="tool-button" id="finishCustomPolygonBtn" type="button" disabled>
+              <i data-lucide="check"></i>
+              <span>Schliessen</span>
+            </button>
+            <button class="tool-button" id="cancelCustomPolygonBtn" type="button" disabled>
+              <i data-lucide="x"></i>
+              <span>Abbrechen</span>
+            </button>
+            <div class="coordinate-row">
+              <span>Custom-Punkte</span>
+              <strong id="customPolygonValue">0</strong>
+            </div>
+          </div>
           <div class="button-grid">
             <button class="tool-button primary" id="saveQuestionBtn" type="button">
               <i data-lucide="list-plus"></i>
@@ -171,7 +198,7 @@
           <div class="answer-list" id="answerList" aria-label="Gespeicherte Antworten"></div>
         </div>
 
-        <div class="tool-section">
+        <div class="tool-section" data-panel="data">
           <div class="section-heading">
             <h3>Pins</h3>
             <span class="section-count" id="poiCategoryCount">0 Kategorien</span>
@@ -198,7 +225,7 @@
             </select>
           </div>
           <div class="button-grid">
-            <button class="tool-button primary" id="loadPinsBtn" type="button">
+            <button class="tool-button primary is-hidden" id="loadPinsBtn" type="button">
               <i data-lucide="map-pinned"></i>
               <span>Pins laden</span>
             </button>
@@ -218,7 +245,7 @@
           <div class="pin-legend" id="pinLegend" aria-label="Geladene Pin-Kategorien"></div>
         </div>
 
-        <div class="tool-section">
+        <div class="tool-section" data-panel="data">
           <div class="section-heading">
             <h3>OePNV</h3>
             <span class="section-count" id="transitTypeCount">0 Linien</span>
@@ -234,7 +261,7 @@
               <i data-lucide="train-front"></i>
               <span>Frankfurt/RMV</span>
             </button>
-            <button class="tool-button primary" id="loadTransitBtn" type="button">
+            <button class="tool-button primary is-hidden" id="loadTransitBtn" type="button">
               <i data-lucide="route"></i>
               <span>Linien laden</span>
             </button>
@@ -250,37 +277,7 @@
           <div class="pin-legend" id="transitLegend" aria-label="Geladene OePNV-Linien"></div>
         </div>
 
-        <div class="tool-section">
-          <div class="section-heading">
-            <h3>Radar</h3>
-          </div>
-          <div class="inline-controls">
-            <label class="select-label" for="radarDistance">Radius</label>
-            <select id="radarDistance">
-              <option value="400">400 m</option>
-              <option value="800">800 m</option>
-              <option value="1600">1.6 km</option>
-              <option value="4800" selected>4.8 km</option>
-              <option value="8000">8 km</option>
-              <option value="16000">16 km</option>
-              <option value="40000">40 km</option>
-              <option value="80000">80 km</option>
-              <option value="160000">160 km</option>
-            </select>
-          </div>
-          <div class="button-grid">
-            <button class="tool-button primary" id="previewRadarBtn" type="button">
-              <i data-lucide="radio-tower"></i>
-              <span>Anzeigen</span>
-            </button>
-            <button class="tool-button" id="clearRadarBtn" type="button" disabled>
-              <i data-lucide="eraser"></i>
-              <span>Loeschen</span>
-            </button>
-          </div>
-        </div>
-
-        <div class="tool-section danger-zone">
+        <div class="tool-section danger-zone" data-panel="info">
           <button class="tool-button danger full-width" id="clearGameBtn" type="button">
             <i data-lucide="trash-2"></i>
             <span>Karte zuruecksetzen</span>

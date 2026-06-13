@@ -220,6 +220,39 @@ input:focus-visible {
   font-weight: 700;
 }
 
+.control-panel.is-collapsed {
+  display: none;
+}
+
+.panel-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.panel-tab {
+  min-height: 36px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.panel-tab.is-active {
+  border-color: rgba(19, 138, 99, 0.42);
+  background: #ecfdf5;
+  color: #0f6b4f;
+}
+
+[data-panel].is-panel-hidden {
+  display: none !important;
+}
+
 .metric-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(76px, 1fr));
@@ -394,6 +427,22 @@ input {
 
 .thermometer-fields .coordinate-row {
   grid-column: 1 / -1;
+  margin-top: 0;
+}
+
+.custom-polygon-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.custom-polygon-fields .tool-button:first-child,
+.custom-polygon-fields .coordinate-row {
+  grid-column: 1 / -1;
+}
+
+.custom-polygon-fields .coordinate-row {
   margin-top: 0;
 }
 
