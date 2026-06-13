@@ -20,7 +20,8 @@ const MAX_AUTO_SINGLE_QUERY_AREA_KM2 = 1500;
 const MAX_AUTO_TRANSIT_QUERY_AREA_KM2 = 1200;
 const MAX_BOUNDARY_PRELOAD_AREA_KM2 = 6000;
 const MAX_BOUNDARY_TRANSIT_PRELOAD_AREA_KM2 = 3200;
-const MAX_SEARCH_CELLS = 2400;
+const MAX_POLYGON_REFERENCE_FEATURES = 900;
+const MAX_MEASURING_REFERENCE_FEATURES = 260;
 const AUTO_MAP_LOAD_DEBOUNCE_MS = 700;
 const AUTO_MAP_LOAD_GRID_DEGREES = 0.02;
 const POI_CATEGORY_ORDER = [
@@ -300,7 +301,7 @@ const ui = {
   transitCountValue: document.querySelector("#transitCountValue"),
   stationCountValue: document.querySelector("#stationCountValue"),
   answerCountValue: document.querySelector("#answerCountValue"),
-  remainingCellCountValue: document.querySelector("#remainingCellCountValue"),
+  remainingPolygonCountValue: document.querySelector("#remainingPolygonCountValue"),
   seekerValue: document.querySelector("#seekerValue"),
   locateBtn: document.querySelector("#locateBtn"),
   fitBoundsBtn: document.querySelector("#fitBoundsBtn"),
@@ -370,7 +371,9 @@ let customDraftMarkers = [];
 let searchRenderer = null;
 let searchGridLayer = null;
 let questionGeometryLayer = null;
-let searchCells = [];
+let remainingSearchGeometry = null;
+let remainingSearchAreaSquareMeters = 0;
+let remainingSearchPolygonCount = 0;
 let transitLayer = null;
 let transitStationLayer = null;
 let transitRenderer = null;
@@ -691,7 +694,9 @@ function clearBoundary() {
   }
 
   boundaryPoints = [];
-  searchCells = [];
+  remainingSearchGeometry = null;
+  remainingSearchAreaSquareMeters = 0;
+  remainingSearchPolygonCount = 0;
   if (questionGeometryLayer) {
     questionGeometryLayer.clearLayers();
   }
@@ -1732,7 +1737,7 @@ function updateQuestionStatus(message) {
     return;
   }
 
-  ui.questionStatus.textContent = `${getRemainingCellCount()} Zellen verbleibend`;
+  ui.questionStatus.textContent = `Suchflaeche: ${formatArea(getRemainingSearchAreaSquareMeters())}`;
 }
 
 function setQuestionSync(value) {
@@ -2103,7 +2108,10 @@ function formatAnswerValue(value) {
 
 function formatAnswerEffect(effect) {
   if (effect.status === "applied") {
-    return `${effect.excludedCount} ausgeschlossen`;
+    const excludedArea = Number(effect.excludedAreaSquareMeters) || 0;
+    return excludedArea > 1 ?
+      `${formatArea(excludedArea)} ausgeschlossen` :
+      "keine Flaeche entfernt";
   }
 
   return effect.reason || "Nicht angewendet";
@@ -2231,93 +2239,47 @@ async function deleteAnswer(answerId) {
 
 function rebuildSearchGrid() {
   if (!boundaryLayer || boundaryPoints.length < 3) {
-    searchCells = [];
+    remainingSearchGeometry = null;
+    remainingSearchAreaSquareMeters = 0;
+    remainingSearchPolygonCount = 0;
     renderSearchGrid();
     return;
   }
 
-  const bounds = boundaryLayer.getBounds();
-  const areaKm2 = Math.abs(geodesicArea(boundaryPoints)) / 1000000;
-  let cellSizeMeters = getSearchCellSizeMeters(areaKm2);
-  let cells = [];
-
-  do {
-    cells = generateSearchCells(bounds, cellSizeMeters);
-    if (cells.length > MAX_SEARCH_CELLS) {
-      cellSizeMeters *= 1.35;
-    }
-  } while (cells.length > MAX_SEARCH_CELLS && cellSizeMeters < 2500);
-
-  searchCells = cells;
+  remainingSearchGeometry = getBoundarySearchGeometry();
   renderSearchGrid();
 }
 
-function getSearchCellSizeMeters(areaKm2) {
-  if (areaKm2 > 1200) {
-    return 800;
-  }
-
-  if (areaKm2 > 400) {
-    return 500;
-  }
-
-  if (areaKm2 > 80) {
-    return 250;
-  }
-
-  if (areaKm2 > 20) {
-    return 150;
-  }
-
-  return 100;
-}
-
-function generateSearchCells(bounds, cellSizeMeters) {
-  const centerLat = (bounds.getSouth() + bounds.getNorth()) / 2;
-  const latStep = metersToLatDegrees(cellSizeMeters);
-  const lngStep = metersToLngDegrees(cellSizeMeters, centerLat);
-  const cells = [];
-  let index = 0;
-
-  for (let south = bounds.getSouth(); south < bounds.getNorth(); south += latStep) {
-    const north = Math.min(south + latStep, bounds.getNorth());
-
-    for (let west = bounds.getWest(); west < bounds.getEast(); west += lngStep) {
-      const east = Math.min(west + lngStep, bounds.getEast());
-      const center = L.latLng((south + north) / 2, (west + east) / 2);
-
-      if (!pointInPolygon(center, boundaryPoints)) {
-        continue;
-      }
-
-      cells.push({
-        id: `cell-${index}`,
-        center,
-        bounds: [[south, west], [north, east]],
-        areaSquareMeters: cellAreaSquareMeters(south, north, west, east),
-        status: "possible",
-        excludedBy: null,
-      });
-      index += 1;
-    }
-  }
-
-  return cells;
-}
-
 function applyAnswersToSearchGrid() {
-  if (searchCells.length === 0) {
+  const boundaryGeometry = getBoundarySearchGeometry();
+
+  if (!boundaryGeometry) {
     answerEffects = new Map();
+    remainingSearchGeometry = null;
+    remainingSearchAreaSquareMeters = 0;
+    remainingSearchPolygonCount = 0;
     renderSearchGrid();
     renderAnswerList();
     return;
   }
 
-  searchCells.forEach((cell) => {
-    cell.status = "possible";
-    cell.excludedBy = null;
-  });
   answerEffects = new Map();
+  remainingSearchGeometry = boundaryGeometry;
+
+  if (!isTurfAvailable()) {
+    answers.forEach((answer) => {
+      answerEffects.set(answer.id, {
+        status: "skipped",
+        reason: "Polygon-Bibliothek laedt noch",
+        excludedAreaSquareMeters: 0,
+      });
+    });
+    renderQuestionGeometry();
+    renderSearchGrid();
+    renderAnswerList();
+    updateQuestionStatus();
+    return;
+  }
 
   answers.forEach((answer) => {
     const context = buildQuestionContext(answer);
@@ -2326,38 +2288,30 @@ function applyAnswersToSearchGrid() {
       answerEffects.set(answer.id, {
         status: "skipped",
         reason: context.reason,
-        excludedCount: 0,
+        excludedAreaSquareMeters: 0,
       });
       return;
     }
 
-    let evaluatedCount = 0;
-    let excludedCount = 0;
+    const allowedGeometry = buildAllowedSearchGeometry(answer, context, boundaryGeometry);
 
-    searchCells.forEach((cell) => {
-      if (cell.status === "excluded") {
-        return;
-      }
+    if (!allowedGeometry) {
+      answerEffects.set(answer.id, {
+        status: "skipped",
+        reason: "Keine Flaeche berechnet",
+        excludedAreaSquareMeters: 0,
+      });
+      return;
+    }
 
-      const keep = cellMatchesAnswer(cell, answer, context);
-
-      if (keep === null) {
-        return;
-      }
-
-      evaluatedCount += 1;
-
-      if (!keep) {
-        cell.status = "excluded";
-        cell.excludedBy = answer.id;
-        excludedCount += 1;
-      }
-    });
+    const previousArea = getFeatureAreaSquareMeters(remainingSearchGeometry);
+    remainingSearchGeometry = normalizeSearchGeometry(intersectFeatures(remainingSearchGeometry, allowedGeometry));
+    const nextArea = getFeatureAreaSquareMeters(remainingSearchGeometry);
 
     answerEffects.set(answer.id, {
-      status: evaluatedCount > 0 ? "applied" : "skipped",
-      reason: evaluatedCount > 0 ? "" : "Keine Zellen ausgewertet",
-      excludedCount,
+      status: "applied",
+      reason: "",
+      excludedAreaSquareMeters: Math.max(0, previousArea - nextArea),
     });
   });
 
@@ -2365,6 +2319,448 @@ function applyAnswersToSearchGrid() {
   renderSearchGrid();
   renderAnswerList();
   updateQuestionStatus();
+}
+
+function buildAllowedSearchGeometry(answer, context, boundaryGeometry) {
+  if (!isTurfAvailable()) {
+    return null;
+  }
+
+  if (answer.questionType === "radar") {
+    const circle = createCircleFeature(answer.seekerPosition, context.radius);
+    if (!circle) {
+      return null;
+    }
+    return answer.answer === "yes" ?
+      normalizeSearchGeometry(intersectFeatures(boundaryGeometry, circle)) :
+      normalizeSearchGeometry(differenceFeatures(boundaryGeometry, circle));
+  }
+
+  if (answer.questionType === "thermometer") {
+    const side = createThermometerSideFeature(context.start, context.end, answer.answer, boundaryGeometry);
+    return side ? normalizeSearchGeometry(intersectFeatures(boundaryGeometry, side)) : null;
+  }
+
+  if (answer.questionType === "custom") {
+    const customPolygon = createPolygonFeature(context.polygon);
+    if (!customPolygon) {
+      return null;
+    }
+    return answer.answer === "inside" ?
+      normalizeSearchGeometry(intersectFeatures(boundaryGeometry, customPolygon)) :
+      normalizeSearchGeometry(differenceFeatures(boundaryGeometry, customPolygon));
+  }
+
+  if (answer.questionType === "matching") {
+    return buildMatchingAllowedGeometry(answer, context, boundaryGeometry);
+  }
+
+  if (answer.questionType === "measuring") {
+    return buildMeasuringAllowedGeometry(answer, context, boundaryGeometry);
+  }
+
+  return null;
+}
+
+function buildMatchingAllowedGeometry(answer, context, boundaryGeometry) {
+  if (!window.turf?.voronoi) {
+    return null;
+  }
+
+  const features = uniqueQuestionFeatures(context.features);
+
+  if (features.length === 0 || features.length > MAX_POLYGON_REFERENCE_FEATURES) {
+    return null;
+  }
+
+  const points = window.turf.featureCollection(features.map((feature, index) =>
+    window.turf.point([Number(feature.lng), Number(feature.lat)], { featureIndex: index })));
+  const cells = window.turf.voronoi(points, { bbox: getExpandedTurfBbox(boundaryGeometry) });
+
+  if (!cells?.features?.length) {
+    return null;
+  }
+
+  const allowedCells = [];
+
+  cells.features.forEach((cell) => {
+    const sourceFeature = getVoronoiSourceFeature(cell, features);
+
+    if (!sourceFeature) {
+      return;
+    }
+
+    const featureValue = getMatchingValueForFeature(sourceFeature, answer.category);
+    const matches = featureValue && matchingValuesOverlap(context.seekerValue, featureValue);
+    const isAllowed = answer.answer === "yes" ? matches : !matches;
+
+    if (!isAllowed) {
+      return;
+    }
+
+    const clippedCell = normalizeSearchGeometry(intersectFeatures(boundaryGeometry, cell));
+
+    if (clippedCell) {
+      allowedCells.push(clippedCell);
+    }
+  });
+
+  return combinePolygonFeatures(allowedCells);
+}
+
+function buildMeasuringAllowedGeometry(answer, context, boundaryGeometry) {
+  if (!window.turf?.union) {
+    return null;
+  }
+
+  if (!Number.isFinite(context.seekerDistance) || context.seekerDistance <= 0) {
+    return null;
+  }
+
+  const features = uniqueQuestionFeatures(context.features);
+
+  if (features.length === 0) {
+    return null;
+  }
+
+  const sampledFeatures = sampleFeaturesForGeometry(features, MAX_MEASURING_REFERENCE_FEATURES);
+  const circleSteps = sampledFeatures.length > 120 ? 18 : 28;
+  const circles = sampledFeatures
+    .map((feature) => createCircleFeature(feature, context.seekerDistance, circleSteps))
+    .filter(Boolean);
+  const distanceGeometry = unionPolygonFeatures(circles);
+
+  if (!distanceGeometry) {
+    return null;
+  }
+
+  return answer.answer === "closer" ?
+    normalizeSearchGeometry(intersectFeatures(boundaryGeometry, distanceGeometry)) :
+    normalizeSearchGeometry(differenceFeatures(boundaryGeometry, distanceGeometry));
+}
+
+function getBoundarySearchGeometry() {
+  if (!boundaryLayer || boundaryPoints.length < 3 || !isTurfAvailable()) {
+    return null;
+  }
+
+  return createPolygonFeature(boundaryPoints);
+}
+
+function isTurfAvailable() {
+  return Boolean(window.turf?.polygon && window.turf?.intersect && window.turf?.difference);
+}
+
+function createPolygonFeature(points) {
+  const ring = pointsToTurfRing(points);
+
+  if (ring.length < 4) {
+    return null;
+  }
+
+  try {
+    const polygon = window.turf.polygon([ring]);
+    return window.turf.cleanCoords ? window.turf.cleanCoords(polygon) : polygon;
+  } catch {
+    return null;
+  }
+}
+
+function createCircleFeature(point, radiusMeters, steps = 72) {
+  if (!point || !Number.isFinite(Number(radiusMeters)) || Number(radiusMeters) <= 0) {
+    return null;
+  }
+
+  return window.turf.circle([Number(point.lng), Number(point.lat)], Number(radiusMeters) / 1000, {
+    steps,
+    units: "kilometers",
+  });
+}
+
+function createThermometerSideFeature(start, end, answer, boundaryGeometry) {
+  const startPoint = normalizeLatLngObject(start);
+  const endPoint = normalizeLatLngObject(end);
+
+  if (!startPoint || !endPoint) {
+    return null;
+  }
+
+  const bbox = getExpandedTurfBbox(boundaryGeometry);
+  const rectangle = [
+    { lng: bbox[0], lat: bbox[1] },
+    { lng: bbox[2], lat: bbox[1] },
+    { lng: bbox[2], lat: bbox[3] },
+    { lng: bbox[0], lat: bbox[3] },
+  ];
+  const origin = {
+    lat: (bbox[1] + bbox[3]) / 2,
+    lng: (bbox[0] + bbox[2]) / 2,
+  };
+  const projectedStart = projectLatLngToMeters(startPoint, origin);
+  const projectedEnd = projectLatLngToMeters(endPoint, origin);
+  const direction = {
+    x: projectedEnd.x - projectedStart.x,
+    y: projectedEnd.y - projectedStart.y,
+  };
+
+  if (Math.hypot(direction.x, direction.y) < 1) {
+    return null;
+  }
+
+  const midpoint = {
+    x: (projectedStart.x + projectedEnd.x) / 2,
+    y: (projectedStart.y + projectedEnd.y) / 2,
+  };
+  const keepCloserSide = answer === "closer";
+  const clipped = clipPolygonToHalfPlane(rectangle, (point) => {
+    const projected = projectLatLngToMeters(point, origin);
+    const side = ((projected.x - midpoint.x) * direction.x) + ((projected.y - midpoint.y) * direction.y);
+    return keepCloserSide ? side >= -0.001 : side <= 0.001;
+  }, (startVertex, endVertex) => {
+    const projectedA = projectLatLngToMeters(startVertex, origin);
+    const projectedB = projectLatLngToMeters(endVertex, origin);
+    const sideA = ((projectedA.x - midpoint.x) * direction.x) + ((projectedA.y - midpoint.y) * direction.y);
+    const sideB = ((projectedB.x - midpoint.x) * direction.x) + ((projectedB.y - midpoint.y) * direction.y);
+    const ratio = sideA / (sideA - sideB);
+    return {
+      lat: startVertex.lat + ((endVertex.lat - startVertex.lat) * ratio),
+      lng: startVertex.lng + ((endVertex.lng - startVertex.lng) * ratio),
+    };
+  });
+
+  return createPolygonFeature(clipped);
+}
+
+function clipPolygonToHalfPlane(vertices, isInside, intersection) {
+  let output = vertices;
+
+  if (output.length === 0) {
+    return [];
+  }
+
+  const input = output;
+  output = [];
+
+  for (let index = 0; index < input.length; index += 1) {
+    const current = input[index];
+    const previous = input[(index + input.length - 1) % input.length];
+    const currentInside = isInside(current);
+    const previousInside = isInside(previous);
+
+    if (currentInside) {
+      if (!previousInside) {
+        output.push(intersection(previous, current));
+      }
+      output.push(current);
+    } else if (previousInside) {
+      output.push(intersection(previous, current));
+    }
+  }
+
+  return output;
+}
+
+function projectLatLngToMeters(point, origin) {
+  const lat = Number(point.lat);
+  const lng = Number(point.lng);
+  const originLat = Number(origin.lat);
+  const metersPerLng = 111320 * Math.max(0.2, Math.cos(degreesToRadians(originLat)));
+
+  return {
+    x: (lng - Number(origin.lng)) * metersPerLng,
+    y: (lat - originLat) * 110574,
+  };
+}
+
+function pointsToTurfRing(points) {
+  const ring = points
+    .map((point) => normalizeLatLngObject(point))
+    .filter(Boolean)
+    .map((point) => [Number(point.lng), Number(point.lat)]);
+
+  if (ring.length > 0) {
+    const first = ring[0];
+    const last = ring[ring.length - 1];
+
+    if (first[0] !== last[0] || first[1] !== last[1]) {
+      ring.push([...first]);
+    }
+  }
+
+  return ring;
+}
+
+function getExpandedTurfBbox(feature) {
+  const bbox = window.turf.bbox(feature);
+  const lngSpan = Math.max(0.01, Math.abs(bbox[2] - bbox[0]));
+  const latSpan = Math.max(0.01, Math.abs(bbox[3] - bbox[1]));
+  const padding = Math.max(lngSpan, latSpan) * 0.8;
+
+  return [
+    bbox[0] - padding,
+    bbox[1] - padding,
+    bbox[2] + padding,
+    bbox[3] + padding,
+  ];
+}
+
+function intersectFeatures(featureA, featureB) {
+  if (!featureA || !featureB) {
+    return null;
+  }
+
+  try {
+    return window.turf.intersect(featureA, featureB);
+  } catch {
+    return null;
+  }
+}
+
+function differenceFeatures(featureA, featureB) {
+  if (!featureA) {
+    return null;
+  }
+
+  if (!featureB) {
+    return featureA;
+  }
+
+  try {
+    return window.turf.difference(featureA, featureB);
+  } catch {
+    return null;
+  }
+}
+
+function unionPolygonFeatures(features) {
+  const validFeatures = features.map(normalizeSearchGeometry).filter(Boolean);
+
+  if (validFeatures.length === 0) {
+    return null;
+  }
+
+  let unioned = validFeatures[0];
+
+  for (let index = 1; index < validFeatures.length; index += 1) {
+    try {
+      unioned = window.turf.union(unioned, validFeatures[index]) || unioned;
+    } catch {
+      return combinePolygonFeatures(validFeatures);
+    }
+  }
+
+  return normalizeSearchGeometry(unioned);
+}
+
+function combinePolygonFeatures(features) {
+  const polygons = [];
+
+  features.map(normalizeSearchGeometry).filter(Boolean).forEach((feature) => {
+    if (feature.geometry.type === "Polygon") {
+      polygons.push(feature.geometry.coordinates);
+    } else if (feature.geometry.type === "MultiPolygon") {
+      feature.geometry.coordinates.forEach((polygon) => polygons.push(polygon));
+    }
+  });
+
+  if (polygons.length === 0) {
+    return null;
+  }
+
+  if (polygons.length === 1) {
+    return window.turf.polygon(polygons[0]);
+  }
+
+  return window.turf.multiPolygon(polygons);
+}
+
+function normalizeSearchGeometry(feature) {
+  if (!feature?.geometry) {
+    return null;
+  }
+
+  if (!["Polygon", "MultiPolygon"].includes(feature.geometry.type)) {
+    return null;
+  }
+
+  if (getFeatureAreaSquareMeters(feature) <= 1) {
+    return null;
+  }
+
+  return feature;
+}
+
+function getFeatureAreaSquareMeters(feature) {
+  if (!feature?.geometry || !isTurfAvailable()) {
+    return 0;
+  }
+
+  try {
+    return window.turf.area(feature);
+  } catch {
+    return 0;
+  }
+}
+
+function getFeaturePolygonCount(feature) {
+  if (!feature?.geometry) {
+    return 0;
+  }
+
+  if (feature.geometry.type === "Polygon") {
+    return 1;
+  }
+
+  if (feature.geometry.type === "MultiPolygon") {
+    return feature.geometry.coordinates.length;
+  }
+
+  return 0;
+}
+
+function uniqueQuestionFeatures(features) {
+  const seen = new Set();
+
+  return features.filter((feature) => {
+    const key = `${Number(feature.lat).toFixed(6)},${Number(feature.lng).toFixed(6)},${feature.id}`;
+
+    if (seen.has(key)) {
+      return false;
+    }
+
+    seen.add(key);
+    return Number.isFinite(Number(feature.lat)) && Number.isFinite(Number(feature.lng));
+  });
+}
+
+function sampleFeaturesForGeometry(features, maxCount) {
+  if (features.length <= maxCount) {
+    return features;
+  }
+
+  const step = features.length / maxCount;
+  const sampled = [];
+
+  for (let index = 0; index < maxCount; index += 1) {
+    sampled.push(features[Math.floor(index * step)]);
+  }
+
+  return sampled;
+}
+
+function getVoronoiSourceFeature(cell, features) {
+  const featureIndex = Number(cell.properties?.featureIndex);
+
+  if (Number.isInteger(featureIndex) && features[featureIndex]) {
+    return features[featureIndex];
+  }
+
+  try {
+    const center = window.turf.centroid(cell).geometry.coordinates;
+    return nearestFeature({ lat: center[1], lng: center[0] }, features);
+  } catch {
+    return null;
+  }
 }
 
 function buildQuestionContext(answer) {
@@ -2442,71 +2838,27 @@ function buildQuestionContext(answer) {
   return { applicable: false, reason: "Fragetyp unbekannt" };
 }
 
-function cellMatchesAnswer(cell, answer, context) {
-  if (answer.questionType === "radar") {
-    const distance = distanceMeters(cell.center, answer.seekerPosition);
-    const inside = distance <= context.radius;
-    return answer.answer === "yes" ? inside : !inside;
-  }
-
-  if (answer.questionType === "thermometer") {
-    const startDistance = distanceMeters(cell.center, context.start);
-    const endDistance = distanceMeters(cell.center, context.end);
-    const closerAfterTravel = endDistance < startDistance;
-    return answer.answer === "closer" ? closerAfterTravel : !closerAfterTravel;
-  }
-
-  if (answer.questionType === "custom") {
-    const inside = pointInPolygon(cell.center, context.polygon);
-    return answer.answer === "inside" ? inside : !inside;
-  }
-
-  if (answer.questionType === "matching") {
-    const cellValue = getMatchingValueForPoint(cell.center, answer.category, context.features);
-
-    if (!cellValue) {
-      return null;
-    }
-
-    const matches = matchingValuesOverlap(context.seekerValue, cellValue);
-    return answer.answer === "yes" ? matches : !matches;
-  }
-
-  if (answer.questionType === "measuring") {
-    const cellDistance = distanceToNearestFeature(cell.center, context.features);
-
-    if (!Number.isFinite(cellDistance)) {
-      return null;
-    }
-
-    return answer.answer === "closer" ?
-      cellDistance < context.seekerDistance :
-      cellDistance > context.seekerDistance;
-  }
-
-  return null;
-}
-
 function renderSearchGrid() {
   if (!searchGridLayer) {
     return;
   }
 
   searchGridLayer.clearLayers();
+  remainingSearchAreaSquareMeters = getFeatureAreaSquareMeters(remainingSearchGeometry);
+  remainingSearchPolygonCount = getFeaturePolygonCount(remainingSearchGeometry);
 
-  searchCells.forEach((cell) => {
-    if (cell.status !== "excluded") {
-      return;
-    }
-
-    L.rectangle(cell.bounds, {
-      renderer: searchRenderer,
+  if (remainingSearchGeometry && answers.length > 0) {
+    L.geoJSON(remainingSearchGeometry, {
       interactive: false,
-      stroke: false,
-      fillColor: "#b42318",
-      fillOpacity: 0.24,
+      style: {
+        color: "#138a63",
+        fillColor: "#138a63",
+        fillOpacity: 0.22,
+        opacity: 0.78,
+        weight: 2,
+      },
     }).addTo(searchGridLayer);
-  });
+  }
 
   updateStats();
   refreshOverlayOrder();
@@ -2645,23 +2997,27 @@ function getMatchingValueForPoint(point, category, features) {
     return null;
   }
 
+  return getMatchingValueForFeature(nearest, category);
+}
+
+function getMatchingValueForFeature(feature, category) {
   if (category === "transit_line") {
     return {
       type: "set",
-      values: nearest.lineRefs?.length ? nearest.lineRefs : [nearest.name],
+      values: feature.lineRefs?.length ? feature.lineRefs : [feature.name],
     };
   }
 
   if (category === "station_name_length") {
     return {
       type: "value",
-      value: String(normalizedNameLength(nearest.name)),
+      value: String(normalizedNameLength(feature.name)),
     };
   }
 
   return {
     type: "value",
-    value: nearest.id,
+    value: feature.id,
   };
 }
 
@@ -2703,29 +3059,20 @@ function normalizedNameLength(value) {
     .length;
 }
 
-function getRemainingCellCount() {
-  return searchCells.filter((cell) => cell.status !== "excluded").length;
+function getRemainingPolygonCount() {
+  return remainingSearchPolygonCount;
 }
 
 function getRemainingSearchAreaSquareMeters() {
-  return searchCells
-    .filter((cell) => cell.status !== "excluded")
-    .reduce((sum, cell) => sum + cell.areaSquareMeters, 0);
-}
+  if (remainingSearchGeometry) {
+    return remainingSearchAreaSquareMeters;
+  }
 
-function metersToLatDegrees(meters) {
-  return meters / 110574;
-}
+  if (boundaryLayer && boundaryPoints.length >= 3) {
+    return Math.abs(geodesicArea(boundaryPoints));
+  }
 
-function metersToLngDegrees(meters, latitude) {
-  return meters / (111320 * Math.max(0.2, Math.cos(degreesToRadians(latitude))));
-}
-
-function cellAreaSquareMeters(south, north, west, east) {
-  const centerLat = (south + north) / 2;
-  const height = Math.abs(north - south) * 110574;
-  const width = Math.abs(east - west) * 111320 * Math.cos(degreesToRadians(centerLat));
-  return Math.max(0, height * width);
+  return 0;
 }
 
 function distanceMeters(pointA, pointB) {
@@ -3541,7 +3888,9 @@ function clearGame() {
   lastAutoTransitKey = "";
   hasPendingAutoMapLoad = false;
   boundaryPoints = [];
-  searchCells = [];
+  remainingSearchGeometry = null;
+  remainingSearchAreaSquareMeters = 0;
+  remainingSearchPolygonCount = 0;
   renderSearchGrid();
   isDrawingBoundary = false;
   setCustomPolygonDrawing(false);
@@ -3600,7 +3949,7 @@ function updateStats(visiblePoiCount, visibleTransitCount, visibleStationCount) 
   const resolvedStationCount = Number.isFinite(visibleStationCount) ?
     visibleStationCount :
     (ui.transitType.value === "all" ? 0 : getStationsForLines(visibleLines).length);
-  const remainingCells = getRemainingCellCount();
+  const remainingPolygons = getRemainingPolygonCount();
 
   ui.zoomValue.textContent = map ? String(map.getZoom()) : "-";
   ui.pointCountValue.textContent = String(boundaryPoints.length);
@@ -3608,9 +3957,9 @@ function updateStats(visiblePoiCount, visibleTransitCount, visibleStationCount) 
   ui.transitCountValue.textContent = String(resolvedTransitCount);
   ui.stationCountValue.textContent = String(resolvedStationCount);
   ui.answerCountValue.textContent = String(answers.length);
-  ui.remainingCellCountValue.textContent = searchCells.length > 0 ? String(remainingCells) : "0";
+  ui.remainingPolygonCountValue.textContent = remainingSearchGeometry ? String(remainingPolygons) : "0";
 
-  if (searchCells.length > 0) {
+  if (remainingSearchGeometry) {
     ui.areaValue.textContent = formatArea(getRemainingSearchAreaSquareMeters());
   } else if (boundaryLayer && boundaryPoints.length >= 3) {
     ui.areaValue.textContent = formatArea(Math.abs(geodesicArea(boundaryPoints)));
